@@ -295,7 +295,8 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net = NetRate(ckpt, dev, prior, dps) if src == "net" else None
-    policy = load_policy(RL_NAME or CKPT_RL[flag], RL_DIR or None)
+    policy = (load_policy(RL_NAME or CKPT_RL[flag], RL_DIR) if RL_DIR
+              else load_policy(RL_NAME or CKPT_RL[flag]))
     pid = PositionPID()
     ins = AttitudeINS(quat_to_matrix(env.quat[0]))
     tp = np.array([0.0, 0.0, target[1]])
