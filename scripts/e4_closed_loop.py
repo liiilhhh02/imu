@@ -174,7 +174,12 @@ def nominal_phase(env, steps=400, dps=1000.0, seed=0):
     """Hover + two-stage open-loop yaw identification; returns the logs needed for the priors."""
     rng = np.random.default_rng(seed)
     dt = DT
-    yid_f = float(rng.uniform(0.3, 2.0)); yid_target = 0.30 * np.deg2rad(dps)
+    yid_f = float(rng.uniform(0.3, 2.0))
+    # 0.55 x range, matching scripts/collect_dr.py: the closed-loop harness used 0.30 x, which is a
+    # weaker excitation than the identification the training and the dataset assume -- and the
+    # measured effect was an online k_hat of 0.65-0.90 cm against a true |r_perp| of ~1.3 cm
+    # (about 50 % low), i.e. the estimator was handicapped inside the loop.
+    yid_target = 0.55 * np.deg2rad(dps)
     yid_d0 = float(rng.uniform(0.3, 1.0)); yid_tA = int(0.2 / dt)
     yid_amp, yid_w0 = None, None
     hover_u = float(env.M) * 9.81 / 4.0
@@ -265,7 +270,9 @@ def identification(seed=0, dps=1000.0, flag=3, post_s=None):
     env = make_env(dps)
     env.reset()
     env.shut_down = np.ones(4)                       # healthy for the identification phase
-    d = nominal_phase(env, steps=int(1.6 / DT), dps=dps, seed=seed)
+    d = nominal_phase(env, steps=int(3.0 / DT), dps=dps, seed=seed)   # was 1.6 s: give the two-stage
+                                                              # manoeuvre the same room the
+                                                              # collector's episodes have
     fault_rng = np.random.get_state()
     env.shut_down_rotors(flag)      # reset() + mask + (flags 2/3) the initial yaw spin
     assert np.array_equal(env.shut_down, MASK[flag]), (env.shut_down, MASK[flag])
