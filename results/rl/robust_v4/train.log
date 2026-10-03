@@ -1,0 +1,5 @@
+[03:25:33] run=robust_v4 warm_start=shutdown_real_7_4 device=cuda train_freq=200 dps=1000.0 lam_max0=0.4 ramp=400 ep_len=2000
+[03:25:34] warm start from /home/liiil/Downloads/gym-pybullet-drones/gym_pybullet_drones/model/shutdown_real_7_4
+[03:26:22] EVAL ep     0 lam=0.00: held 4/4  z_med 3.80  att_med 27.4
+[03:26:22] EVAL ep     0 lam=0.50: held 0/4  z_med -7.74  att_med 44.4
+[03:26:22] EVAL ep     0 lam=1.00: held 0/4  z_med -37.17  att_med 68.2

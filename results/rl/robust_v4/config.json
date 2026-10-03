@@ -1,0 +1,20 @@
+{
+  "policy_in": "shutdown_real_7_4",
+  "fw_dir": "/home/liiil/Downloads/gym-pybullet-drones/gym_pybullet_drones/model",
+  "out": "results/rl/robust_v4",
+  "hours": 2.0,
+  "episodes": 1000000000,
+  "num_env": 8,
+  "train_freq": 200,
+  "len_episode": 2000,
+  "dps": 1000.0,
+  "lr": 1e-05,
+  "batch": 256,
+  "lam_max0": 0.4,
+  "lam_ramp": 400,
+  "eval_every": 40,
+  "eval_draws": 4,
+  "eval_steps": 2000,
+  "eval_levels": "0,0.5,1.0",
+  "seed": 0
+}
