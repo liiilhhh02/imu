@@ -368,10 +368,11 @@ pybullet 的实测偏航惯量也已读回：纯 z 力矩 0.05/0.10 N·m → 隐
 `w_alg`/`w_hat`——不一致则按阶段二分（特征窗内容/填充、`tom_from_command` 的输入、先验顺序、
 刚加的粗汇总缓存、归一化常量、INS 更新节拍）；一致则查"估计值的使用"（是否同时同节拍驱动控制器与 INS、
 INS 初始化的时刻、观测 dims 0:2 的来源）。
-网络接入 Gazebo（`--src net`，另有 `--src alg`）已实现并与 E4 同构（48 帧滚动窗、`tom_from_command`、
-`algebraic_estimate(k=prior[8])`、`E2ENet(hidden=ck['hidden'], layers=ck['layers'])`、**w_hat 同时驱动 INS 与控制器、姿态只来自 INS**）。
-**alg/net 两行在 Gazebo 的数字目前不可信** ⇒ **任务 3 的 net ≥ 90% 验收暂不可测**；
-可用的闭环证据是 pybullet 的 E4（步进驱动、控制间隔按构造精确）。
+**实现方式**：`--src net` / `--src alg` 与 E4 同构（48 帧滚动窗、`tom_from_command`、
+`algebraic_estimate(k=prior[8])`、`E2ENet(hidden=ck['hidden'], layers=ck['layers'])`、
+**w_hat 同时驱动 INS 与控制器、姿态只来自 INS**）。
+**任务 3 的 net ≥ 90% 验收当前未达标**（见上表）：先要修掉 Gazebo 的估计器集成 bug；
+pybullet 侧的 E4 是当前唯一"控制间隔按构造精确"的闭环证据。
 
 **L_prior 归因（对验收指标）**：同一份 v3 数据、同一三轴正则下，
 保留 `L_prior` → 网络/削顶 = **0.293**；删除 → **0.274**（窗口滞后 6.90 → 6.74）。
