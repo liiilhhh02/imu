@@ -28,12 +28,14 @@ import torch
 import torch.nn as nn
 
 WINDOW = 48                      # 240 ms at 200 Hz (the rate is 95 % below 7.1 Hz; drift accumulates)
-COARSE = 15                      # causal 2 s summary: 5 aggregates + 3 per-axis sat fracs + 7 priors
-N_PRIOR = 7                      # r(3), g_T, G, T, range
+COARSE = 17                      # causal 2 s summary: 5 aggregates + 3 per-axis sat fracs + 9 priors
+N_PRIOR = 9                      # r(3), g_T, G, T, range, tau, k
 N_CORR = 6                       # dr(3), dg_T, dG, dT
-FINE_FEATURES = 3 + 1 + 3 + 3 + 4 + 1 + N_PRIOR + 1 + 3      # 26
-# feature layout: s(0:3) | |s|(3) | gyro(4:7) | sat(7:10) | u(10:14) | T/M(14) | priors(15:22)
-#                 | |gyro|(22) | w_alg(23:26)
+FINE_FEATURES = 3 + 1 + 3 + 3 + 4 + 1 + N_PRIOR + 1 + 3      # 28
+# feature layout: s(0:3) | |s|(3) | gyro(4:7) | sat(7:10) | u(10:14) | T/M(14) | priors(15:24)
+#                 | |gyro|(24) | w_alg(25:28)
+# `s` and `T/M` are built from the *command* (identified g_T + identified actuator lag), never from
+# the simulator's true thrust; `k = |r_perp|` (prior[8]) is the lever scale the algebra needs.
 GYRO_SLICE = slice(4, 7)        # <- the only correct way to read the measured rate back out
 
 
@@ -97,48 +99,67 @@ def huber(x: torch.Tensor, delta: float = 1.0) -> torch.Tensor:
 
 
 # ------------------------------------------------------------------- the algebraic (physics) front end
-def algebraic_estimate(gyro: np.ndarray, s: np.ndarray, k: float, sat: np.ndarray,
+def algebraic_estimate(gyro: np.ndarray, s: np.ndarray, k, sat: np.ndarray,
                        lim: float) -> np.ndarray:
     """Closed-form lever-arm inversion from measurable quantities: `|w|^2 = |s|/k`.
 
     Unsaturated axes keep the gyro value (they are exact measurements); saturated axes are recovered
     from the invariant, the measured axes and the clipped sign (ratio preservation when several axes
-    are pinned).  Returns (N,3).
+    are pinned).  `k` is a scalar: the scale the identification minimised (`prior[8]`, itself a
+    `|r_perp|` for the dominant spin direction -- *not* `‖r‖`).
+
+    A per-sample `|r_perp|` computed from the identified vector was tried and **removed again**: it
+    inherits the 20-50 % error of the identified `r` and measurably loses to the self-calibrated
+    scalar (80 held-out flights, per-flight lag: scalar 4.77, per-sample 5.27, hybrid 5.04 rad/s;
+    the per-sample version only wins above 1500 dps, where the clip is already nearly exact).
+
+    A sample whose scale is unknown, or whose invariant says the saturated magnitude is *below* what
+    the unsaturated axes already imply, keeps the clipped gyro: never worse than the plain clip.
+    Returns (N,3).
     """
     w = np.array(gyro, float, copy=True)
-    if not np.isfinite(k) or k <= 0:
-        return w
-    n2 = np.linalg.norm(s, axis=1) / k                       # |w|^2 estimate, per sample
-    n2 = np.maximum(n2, 0.0)
+    k_arr = np.asarray(k, float).ravel()
+    ks = (np.full(len(w), float(k_arr[0])) if k_arr.size == 1 else k_arr)
+    n2 = np.linalg.norm(s, axis=1) / np.where(np.abs(ks) > 1e-12, ks, np.nan)
+    n2 = np.where(np.isfinite(n2), np.maximum(n2, 0.0), np.nan)
     for i in np.where(sat.any(axis=1))[0]:
+        if not np.isfinite(n2[i]):
+            continue                                   # unknown scale -> keep the clip
         m = sat[i]
         known = float(np.sum(gyro[i, ~m] ** 2))
+        need = float(n2[i] - known)
+        if need <= 0.0:
+            continue                                   # clip already >= the invariant -> keep it
         if m.sum() == 1:
-            w[i, m] = np.sign(gyro[i, m]) * np.sqrt(max(n2[i] - known, 0.0))
+            w[i, m] = np.sign(gyro[i, m]) * np.sqrt(need)
         else:
             base = float(np.linalg.norm(gyro[i, m]))
             if base < 1e-9:
-                w[i, m] = np.sign(gyro[i, m]) * np.sqrt(max((n2[i] - known) / m.sum(), 0.0))
+                w[i, m] = np.sign(gyro[i, m]) * np.sqrt(need / m.sum())
             else:
-                w[i, m] = gyro[i, m] * (np.sqrt(max(n2[i] - known, 0.0)) / base)
+                w[i, m] = gyro[i, m] * (np.sqrt(need) / base)
     return w
 
 
-def fine_features(accel, gyro, sat, u_cmd, tom, prior, w_alg):
-    """(H, FINE_FEATURES): residual + norm + raw gyro + mask + command + priors + algebra + norms."""
-    s = accel - np.array([0.0, 0.0, 1.0])[None, :] * tom[:, None]
+def fine_features(accel, gyro, sat, u_cmd, tom_hat, prior, w_alg):
+    """(H, FINE_FEATURES): residual + norm + raw gyro + mask + command + priors + algebra + norms.
+
+    `tom_hat` must be the *command-derived* specific thrust (identified g_T through the identified
+    actuator lag).  Feeding the simulator's true thrust here would hand the network the very nuisance
+    term the estimator is supposed to reconstruct.
+    """
+    s = accel - np.array([0.0, 0.0, 1.0])[None, :] * tom_hat[:, None]
     H = len(accel)
     return np.concatenate([
-        s, np.linalg.norm(s, axis=1)[:, None], gyro, sat.astype(float), u_cmd, tom[:, None],
+        s, np.linalg.norm(s, axis=1)[:, None], gyro, sat.astype(float), u_cmd, tom_hat[:, None],
         np.tile(np.asarray(prior, float)[None, :], (H, 1)),
         np.linalg.norm(gyro, axis=1)[:, None], w_alg,
     ], axis=1).astype(np.float32)
 
 
-def coarse_summary(gyro, sat, u_cmd, tom, prior):
-    """Causal 2 s summary, exactly COARSE dims: 5 aggregates + 3 per-axis saturation fracs + 7 priors."""
-    s = np.asarray(gyro) * 0.0
-    agg = np.array([tom.mean(), tom.std(), np.abs(gyro).mean(), np.abs(gyro).std(),
+def coarse_summary(gyro, sat, u_cmd, tom_hat, prior):
+    """Causal 2 s summary, exactly COARSE dims: 5 aggregates + 3 per-axis saturation fracs + 9 priors."""
+    agg = np.array([tom_hat.mean(), tom_hat.std(), np.abs(gyro).mean(), np.abs(gyro).std(),
                     np.abs(u_cmd).mean()], float)
     return np.concatenate([agg, sat.mean(axis=0), np.asarray(prior, float)]).astype(np.float32)
 

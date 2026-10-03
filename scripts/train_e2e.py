@@ -27,12 +27,35 @@ for _p in (REPO, ME):
 import torch  # noqa: E402
 from scipy.spatial.transform import Rotation  # noqa: E402
 
-from gpd_me.e2e import (COARSE, FINE_FEATURES, GYRO_SLICE, WINDOW, E2ENet,  # noqa: E402
+from gpd_me.e2e import (COARSE, FINE_FEATURES, GYRO_SLICE, N_PRIOR, WINDOW, E2ENet,  # noqa: E402
                         algebraic_estimate, att_errors_deg, coarse_summary, fine_features,
                         huber, ins_rollout, ins_rollout_dt, make_dft)
+from gpd_me.priors import tom_from_command  # noqa: E402
 
 YAW_SIGN = np.array([+1.0, -1.0, +1.0, -1.0])
-KEYS = ("gyro", "accel", "u", "tom", "omega", "quat", "sat", "mask", "dps", "dt", "prior", "true")
+KEYS = ("gyro", "accel", "u", "tom", "omega", "quat", "sat", "mask", "mask_t", "dps", "dt",
+        "prior", "true", "diag_keys", "diag_vals")
+
+
+def _diag_scalar(e, name, default=float("nan")):
+    """Read one scalar out of a shard's `diag_keys`/`diag_vals` tables."""
+    try:
+        ks = list(np.asarray(e["diag_keys"], dtype=object))
+        if name not in ks:
+            return default
+        return float(np.asarray(e["diag_vals"], float)[ks.index(name)])
+    except Exception:
+        return default
+
+
+def _mean_dir(omega, sat):
+    """Mean spin direction over the saturated frames (ground truth, used for diagnostics only)."""
+    m = np.asarray(sat, bool).any(axis=1)
+    if not m.any():
+        m = np.ones(len(omega), bool)
+    v = np.asarray(omega, float)[m].mean(axis=0)
+    nn = float(np.linalg.norm(v))
+    return (v / nn) if nn > 1e-9 else None
 
 
 def load_eps(pattern, limit=None):
@@ -49,11 +72,15 @@ def load_eps(pattern, limit=None):
 def build_dataset(eps, verbose=True):
     n_bad = 0
     acc = {k: [] for k in ("Xf", "Xc", "Xp", "Walg", "W", "R", "A", "U", "TOM", "SAT", "INR",
-                           "CLIP", "META", "PRIOR_T", "DT", "EP")}
+                           "CLIP", "META", "PRIOR_T", "DT", "EP", "TOK")}
     ep_id = 0
     for e in eps:
         n = len(e["gyro"]); dt = float(e["dt"]); lim = np.deg2rad(float(e["dps"]))
         prior = np.asarray(e["prior"], float).ravel()
+        if len(prior) != N_PRIOR:
+            raise ValueError(f"shard with a {len(prior)}-element prior; this code needs {N_PRIOR} "
+                             f"(r(3), g_T, G, T, range, tau, k).  Re-collect or run "
+                             f"scripts/fix_priors.py first.")
         # drop episodes that produced non-finite values (diverged integrations)
         chk = [np.asarray(e[k], float) for k in ("gyro", "accel", "u", "tom", "omega", "quat", "prior")]
         if not all(np.isfinite(c).all() for c in chk):
@@ -61,13 +88,21 @@ def build_dataset(eps, verbose=True):
             continue
         sat = np.asarray(e["sat"], bool)
         gyro = np.asarray(e["gyro"], float)
-        k = float(np.linalg.norm(prior[:3]))
-        s = np.asarray(e["accel"], float) - np.array([0.0, 0.0, 1.0])[None, :] * \
-            np.asarray(e["tom"], float)[:, None]
-        w_alg = algebraic_estimate(gyro, s, k, sat, lim)
+        u_e = np.asarray(e["u"], float)
+        mk_t = np.asarray(e["mask_t"], float)
+        if mk_t.ndim == 1:
+            mk_t = np.tile(mk_t[None, :], (n, 1))
+        # T/M exactly as a deployable estimator must compute it: command -> identified g_T ->
+        # identified actuator lag.  The shard's own `tom` is *simulated truth* and is never used
+        # here; otherwise the network is handed the nuisance term it is supposed to reconstruct.
+        tom_hat = tom_from_command(u_e, mk_t, dt, float(prior[3]), float(prior[7]))
+        tom_hat = np.where(np.isfinite(tom_hat), tom_hat, 0.0)
+        k_s = float(prior[8]) if len(prior) > 8 else 0.0
+        s = np.asarray(e["accel"], float) - np.array([0.0, 0.0, 1.0])[None, :] * tom_hat[:, None]
+        w_alg = algebraic_estimate(gyro, s, k_s, sat, lim)
         # causal 2 s coarse summary
         cs = np.zeros((n, COARSE), np.float32)
-        runt = np.cumsum(np.asarray(e["tom"], float)); runtu = np.cumsum(np.asarray(e["tom"], float) ** 2)
+        runt = np.cumsum(tom_hat); runtu = np.cumsum(tom_hat ** 2)
         rung = np.cumsum(np.abs(gyro), 0); rungu = np.cumsum(gyro ** 2, 0)
         runu = np.cumsum(np.abs(np.asarray(e["u"], float)), 0)
         runs = np.cumsum(sat.astype(np.float64), 0)
@@ -84,21 +119,30 @@ def build_dataset(eps, verbose=True):
                                           - np.atleast_1d(mg).mean() ** 2, 0.0))),
                  float(np.atleast_1d(sub(runu)).mean())],
                 sub(runs), prior])
-        acc["Xf"].append(fine_features(e["accel"], gyro, sat, e["u"], e["tom"], prior, w_alg))
+        acc["Xf"].append(fine_features(e["accel"], gyro, sat, e["u"], tom_hat, prior, w_alg))
         acc["Xc"].append(cs)
         acc["Xp"].append(np.tile(prior[None, :], (n, 1)))
         acc["Walg"].append(w_alg); acc["A"].append(e["accel"])
         acc["W"].append(e["omega"]); acc["SAT"].append(sat); acc["INR"].append(~sat.any(axis=1))
-        acc["CLIP"].append(gyro); acc["U"].append(e["u"]); acc["TOM"].append(e["tom"])
+        acc["CLIP"].append(gyro); acc["U"].append(e["u"]); acc["TOM"].append(tom_hat)
         acc["R"].append(Rotation.from_quat(e["quat"]).as_matrix())
         acc["META"].append(np.tile(np.array([float(e["mask"][1]), float(e["dps"])]), (n, 1)))
         # per-frame control timestep and episode id: the shards are multi-rate (100-400 Hz) and
         # windows must not straddle an episode boundary
         acc["DT"].append(np.full(n, dt, np.float32))
         acc["EP"].append(np.full(n, ep_id, np.float32))
+        # skip the torque term for episodes whose yaw channel was not identifiable (G/T = NaN -> 0):
+        # with G = 0 the loss degenerates into huber(w_z/10), a constant-ish penalty, not a model
+        acc["TOK"].append(np.full(n, float(_diag_scalar(e, "torque_ok", 1.0)), np.float32))
         ep_id += 1
         tr = e["true"][0]
-        pt = np.array([*np.asarray(tr[0], float), 1.0 / float(tr[1]), 0.0, 0.0, lim])
+        r_true = np.asarray(tr[0], float)
+        d_true = _mean_dir(np.asarray(e["omega"], float), sat)
+        k_true = (float(np.linalg.norm(r_true - (r_true @ d_true) * d_true))
+                  if d_true is not None else 0.0)
+        if not np.isfinite(k_true):
+            k_true = 0.0
+        pt = np.array([*r_true, 1.0 / float(tr[1]), 0.0, 0.0, lim, float(tr[3]), k_true])
         acc["PRIOR_T"].append(np.tile(pt[None, :], (n, 1)))
     D = {k: np.concatenate(v) for k, v in acc.items()}
     # drop frames that are non-finite anywhere critical (k=0 identification -> |s|/k explodes etc.)
@@ -152,6 +196,7 @@ def gather(D, idx, dev):
         tom=t(np.stack([D["TOM"][i - W:i] for i in idx])),
         prior_t=t(D["PRIOR_T"][idx - 1]),
         dt=t(D["DT"][idx - 1]), ep=t(D["EP"][idx - 1]),
+        tok=t(D["TOK"][idx - 1]),
         meta=D["META"][idx - 1])
 
 
@@ -172,7 +217,7 @@ def main():
                          "dominated by the spin magnitude above ~1000 dps and is not a usable proxy")
     # ---- step 3: ablation switches ----
     ap.add_argument("--ablate", default="", help="comma list of loss terms to drop: "
-                                                  "bias,att,phys,torque,spec,anchor,prior")
+                                                  "bias,att,phys,torque,spec,prior")
     ap.add_argument("--no_slow", type=int, default=0, help="disable the slow parameter head")
     ap.add_argument("--mode", default="e2e", choices=["e2e", "residual", "noalg"],
                     help="e2e = physics-parameterised output + w_alg feature; "
@@ -201,8 +246,7 @@ def main():
     opt = torch.optim.Adam(net.parameters(), lr=a.lr)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda it: min(1.0, (it + 1) / 200.0))
     scaler = torch.cuda.amp.GradScaler(enabled=bool(a.amp) and dev.type == "cuda")
-    dc_, ds_ = make_dft(WINDOW, 0.005); dc_, ds_ = dc_.to(dev), ds_.to(dev)
-    hi = (torch.arange(WINDOW // 2 + 1, device=dev) / (WINDOW * 0.005)) > 10.0
+    dc_, ds_ = make_dft(WINDOW, 1.0); dc_, ds_ = dc_.to(dev), ds_.to(dev)   # cycles/sample bins
     T = lambda x: torch.tensor(x, dtype=torch.float32, device=dev)
     xf_m_t, xf_s_t, xp_m_t, xp_s_t = T(xf_m), T(xf_s), T(xp_m), T(xp_s)
     ys_t = torch.tensor(YAW_SIGN, device=dev)
@@ -213,15 +257,19 @@ def main():
     def forward_all(B, stage1):
         fine = ((B["fine"] - xf_m_t) / xf_s_t).clamp(-50.0, 50.0)
         if a.mode == "noalg":                     # truly end-to-end: no physics baseline anywhere
-            fine = fine.clone(); fine[..., 23:26] = 0.0
+            fine = fine.clone(); fine[..., 25:28] = 0.0
         base = torch.zeros_like(B["w_alg"]) if a.mode == "noalg" else B["w_alg"]
         satm = torch.ones_like(B["sat"]) if a.mode == "residual" else B["sat"]
         w_hat, corr = net(fine, B["coarse"], (B["prior"] - xp_m_t) / xp_s_t, base, satm)
         corr_eff = torch.zeros_like(corr) if (stage1 or a.no_slow) else corr
-        r_id = B["prior"][:, :3] + corr_eff[:, :3] * 0.02
-        g_T = B["prior"][:, 3] + corr_eff[:, 3] * 0.5
-        G = B["prior"][:, 4] + corr_eff[:, 4] * 5.0
-        Tt = B["prior"][:, 5] + corr_eff[:, 5] * 1.0
+        # bounded corrections: the head may only nudge the identified priors (dr <= 2 cm,
+        # g_T <= 50 %, G <= 5x, T <= 1 s).  A hard bound is better than the old soft anchor term,
+        # which was identically zero by construction under the physics parameterisation.
+        c = torch.tanh(corr_eff)
+        r_id = B["prior"][:, :3] + 0.02 * c[:, :3]
+        g_T = B["prior"][:, 3] + 0.5 * c[:, 3]
+        G = B["prior"][:, 4] + 5.0 * c[:, 4]
+        Tt = B["prior"][:, 5] + 1.0 * c[:, 5]
         satf = B["sat"].any(-1)
         l_rate = huber((w_hat - B["w_true"]).abs().sum(-1))[satf].mean() if satf.any() else w_hat.sum() * 0
         dtv = B["dt"]                                     # per-window control timestep (B,)
@@ -236,23 +284,44 @@ def main():
         resid = B["a_m"][:, :-1] - torch.stack([zz, zz, B["tom"][:, :-1]], -1) - cent - tan
         l_phys = huber(resid.abs().sum(-1) / 10.0).mean()
         yaw_cmd = (B["u"][:, :-1] * ys_t[None, None, :]).sum(-1)
-        l_torque = huber((Tt[:, None] * wdot[..., 2] + wm[..., 2] - G[:, None] * yaw_cmd) / 10.0).mean()
+        # episodes whose yaw channel was not identifiable are dropped from the torque term: with
+        # G = 0 the expression degenerates into huber(w_z/10), which is not a physical constraint.
+        # The residual is *scale-normalised*: a raw huber on `T*wdot_z + w_z - G*u` is dominated by
+        # the finite-difference spikes at the saturation onset (wdot ~ 1e4 rad/s^2 in one sample),
+        # which put ~1e4 into a loss whose other terms are O(10) and made the whole objective an
+        # onset-spike penalty (measured before the fix: torq 9937 -> 0.1*9937 of the total).
+        tok = B["tok"][:, None]                            # (B,1) per-episode flag
+        # ... and so is the finite difference of w_hat *across the onset*, where the algebraic
+        # estimate switches in (a step of tens of rad/s in one sample).  The identified yaw model
+        # describes the failure regime, not the instant the rotors die, so drop a few frames around
+        # every rising edge of the saturation mask.
+        satw = B["sat"].any(-1)
+        edge = torch.zeros_like(satw)
+        edge[:, 1:] = satw[:, 1:] & ~satw[:, :-1]
+        for _k in (1, 2, 3):
+            edge[:, _k:] |= edge[:, :-_k].clone()
+        keep = (~edge[:, :-1]).to(wdot.dtype) * tok
+        r_tq = Tt[:, None] * wdot[..., 2] + wm[..., 2] - G[:, None] * yaw_cmd
+        sc_tq = (G[:, None] * yaw_cmd).abs() + wm[..., 2].abs() + 1.0
+        l_torque = ((huber(r_tq / sc_tq) * keep).sum() / keep.sum().clamp_min(1.0))
         errv = w_hat - B["w_true"]
         l_bias = huber(errv.mean(dim=1).abs().sum(-1)).mean()          # window-mean error = stable lag
-        l_anchor = huber((w_hat - B["fine"][..., GYRO_SLICE]).abs().sum(-1))[B["inr"]].mean() \
-            if B["inr"].any() else w_hat.sum() * 0
-        z = w_hat[..., 2]; zc = z[:, None, :]
+        # spectral regulariser: the >10 Hz mask must follow the *per-window* dt (100-400 Hz shards),
+        # else three quarters of the data is regularised against the wrong band
+        zc = w_hat[..., 2][:, None, :]
+        f = (torch.arange(WINDOW // 2 + 1, device=dev)[None, :] / WINDOW)
+        him = f > (10.0 * dtv)[:, None]
         p = (zc * dc_[None]).sum(-1) ** 2 + (zc * ds_[None]).sum(-1) ** 2
-        l_spec = p[:, hi].sum(-1).mean() / p[:, ~hi].sum(-1).mean().clamp_min(1e-6)
+        l_spec = ((p * him).sum(-1) / (p * ~him).sum(-1).clamp_min(1e-6)).mean()
         l_prior = torch.zeros((), device=dev)
         if not stage1:
             l_prior = (huber(r_id - B["prior_t"][:, :3]).mean() / 0.02
                        + huber(g_T - B["prior_t"][:, 3]).mean())
         total = (l_rate + w("att", 0.5 * l_att) + w("phys", 0.3 * l_phys)
-                 + w("torque", 0.1 * l_torque) + w("anchor", 0.3 * l_anchor)
+                 + w("torque", 0.1 * l_torque)
                  + w("spec", 0.05 * l_spec) + w("prior", 2.0 * l_prior) + w("bias", 1.0 * l_bias))
         return total, dict(rate=l_rate, att=l_att, phys=l_phys, torque=l_torque,
-                           anchor=l_anchor, spec=l_spec, prior=l_prior, bias=l_bias), w_hat, R_hat
+                           spec=l_spec, prior=l_prior, bias=l_bias), w_hat, R_hat
 
     print("\n=== training (stage 1: physics head only; stage 2: + parameter head) ===")
     t0 = time.time()
@@ -281,7 +350,7 @@ def main():
                 lv, pv, _, _ = forward_all(gather(Dva, iv, dev), False)
             print(f"  it{it:5d} {'S1' if stage1 else 'S2'} L={float(loss):8.3f} "
                   f"| rate {float(parts['rate']):7.3f} att {float(parts['att']):6.3f} "
-                  f"phys {float(parts['phys']):6.3f} anch {float(parts['anchor']):6.3f} "
+                  f"phys {float(parts['phys']):6.3f} torq {float(parts['torque']):6.3f} "
                   f"spec {float(parts['spec']):5.3f} bias {float(parts['bias']):6.3f} prior {float(parts['prior']):6.3f} "
                   f"| val L={float(lv):8.3f} rate {float(pv['rate']):7.3f} att {float(pv['att']):6.3f} "
                   f"({time.time()-t0:4.0f}s)")

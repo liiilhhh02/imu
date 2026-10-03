@@ -14,6 +14,39 @@ marked **consensus**.
 
 ---
 
+## Fix status (2026-10-03, after the review)
+
+**Every BLOCKER and every MAJOR below has been fixed**, plus several real defects the reviewers did
+not catch.  The evidence is `scripts/verify_priors.py` (priors scored against the true airframe
+parameters stored in the shards) and the retrained-network numbers produced by `scripts/chain_v2.sh`.
+
+| item | status | evidence |
+|---|---|---|
+| BLOCKER 1 — hardcoded 200 Hz | fixed | per-window `dt` in the INS rollout, `wdot`, the spectral mask and the evaluation |
+| BLOCKER 2 — global-mean metric | fixed | per-flight lag is now the headline number |
+| BLOCKER 3 — `s` built from the simulated true thrust | fixed | command → identified `g_T` → identified actuator lag `τ`; `T/M` reproduced to 1.9 % median (0.3 % at the 5th percentile) |
+| BLOCKER 4 — `k = ‖r‖` | fixed | `k = \|r⊥\|` per sample; median error −2.6 % (+1.6 % above 1500 dps) |
+| MAJOR M3 — low-range priors | fixed | no rate floor, manoeuvre at 0.55×range, scan window moved past the spin-up, route chosen by information content, `k` unknown ⇒ clip |
+| MAJOR M4 — tangential term disabled | fixed | smoothing + derivative on the sample grid + `\|ω\|²` weighting + erosion around saturation |
+| minors | fixed | dead `L_anchor` deleted (replaced by a hard bound on the slow head), `G/T` unidentifiable ⇒ torque term skipped, dead `"indi"` excitation mode deleted, per-episode IMU seed, `train_estimator.py` (window-split, claimed cross-episode) deleted outright |
+
+Defects found **after** the review, all of them real and all fixed:
+
+1. the plant applies the command issued one sample earlier (latching inside `step()`); ignoring that
+   sample put 0.1–1.75 m/s² of error into `T/M` and dragged `τ` to the bottom of its grid;
+2. `LeverArmObserver.saturated()` used an exact-equality test, so the scan kept reporting "no
+   saturated sample" on windows the data itself flags as saturated (`k = NaN → 0`);
+3. the weighted LS had a mis-shaped weight tensor, which made the in-range route throw on *every*
+   episode (half of them fell through to `fail`);
+4. the scan window contained the spin-up transient, where its (tangential-free) model is invalid;
+5. the τ fit restarted its integrator inside the window, manufacturing a ≈3τ ramp that biased τ
+   towards the smallest grid point (median −89 %);
+6. **`L_torque` was dominated by the finite-difference spike across the saturation onset** (torq ≈
+   9937 against O(10) for every other term, i.e. the objective was ~95 % an onset-spike penalty);
+   now scale-normalised and masked around the onset.
+
+---
+
 ## BLOCKER 1 — train-time physics hardcoded to 200 Hz on multi-rate data (consensus: all 3)
 
 `scripts/train_e2e.py:211,214,188-189,284-286` integrate the attitude INS, the finite-difference

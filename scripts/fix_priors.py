@@ -32,9 +32,10 @@ def fix_one(fn):
             float(z["dt"]), tom=np.asarray(z["tom"], float))
         z["prior"] = prior.astype(np.float32)
         np.savez_compressed(fn, **z)
-        return float(diag["k"]), str(diag["how"])
+        return (float(diag["k"]), str(diag["how"]), float(prior[7]),
+                float(diag.get("tom_err_rel", np.nan)), float(diag.get("G", np.nan)))
     except Exception as e:
-        return np.nan, f"fail:{type(e).__name__}"
+        return np.nan, f"fail:{type(e).__name__}", np.nan, np.nan, np.nan
 
 
 def main():
@@ -47,12 +48,17 @@ def main():
     with Pool(a.workers) as pool:
         res = list(pool.imap_unordered(fix_one, files, chunksize=8))
     how = {}
-    for k, h in res:
+    for _k, h, _t, _e, _g in res:
         how[h.split("(")[0]] = how.get(h.split("(")[0], 0) + 1
-    ks = np.array([k for k, _ in res if np.isfinite(k)])
+    ks = np.array([k for k, _h, _t, _e, _g in res if np.isfinite(k)])
+    taus = np.array([t for _k, _h, t, _e, _g in res if np.isfinite(t)])
+    toms = np.array([e for _k, _h, _t, e, _g in res if np.isfinite(e)])
     print(f"  done. route counts: {how}")
-    print(f"  identified |r|: median {np.median(ks)*100:.3f} cm, "
+    print(f"  identified k = |r_perp|: median {np.median(ks)*100:.3f} cm, "
           f"5-95% [{np.percentile(ks,5)*100:.3f}, {np.percentile(ks,95)*100:.3f}] cm")
+    print(f"  identified tau        : median {np.median(taus)*1000:.2f} ms, "
+          f"5-95% [{np.percentile(taus,5)*1000:.2f}, {np.percentile(taus,95)*1000:.2f}] ms")
+    print(f"  command-driven T/M vs the simulated truth: median rel err {np.median(toms)*100:.3f} %")
 
 
 if __name__ == "__main__":

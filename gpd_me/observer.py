@@ -33,19 +33,45 @@ def _skew(v: np.ndarray) -> np.ndarray:
     return np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
 
 
+def _smooth(x: np.ndarray, k: int) -> np.ndarray:
+    """Centred moving average over ``k`` samples (edge-safe: shorter window at the ends)."""
+    if k is None or k <= 1:
+        return np.asarray(x, float)
+    x = np.asarray(x, float)
+    k = int(k) | 1                                        # odd window
+    ker = np.ones(k)
+    num = np.apply_along_axis(lambda c: np.convolve(c, ker, mode="same"), 0, x)
+    cnt = np.convolve(np.ones(len(x)), ker, mode="same")[:, None]
+    return num / cnt
+
+
+def _erode(mask: np.ndarray, m: int) -> np.ndarray:
+    """Boolean mask with ``m`` samples dropped on each side of every False run."""
+    mask = np.asarray(mask, bool)
+    if m <= 0:
+        return mask
+    out = mask.copy()
+    bad = np.where(~mask)[0]
+    for j in bad:
+        out[max(0, j - m):min(len(out), j + m + 1)] = False
+    return out
+
+
 class LeverArmObserver:
     """Range-saturation reconstruction via the lever-arm centripetal term."""
 
     def __init__(self, gyro_limit_dps: float = 1000.0, lever_scale: float | None = None,
-                 ema: float = 0.0, jitter_augment: bool = True, tol: float = 1e-6):
+                 ema: float = 0.0, jitter_augment: bool = True, tol: float = 1e-6,
+                 sat_frac: float = 1e-2):
         self.gyro_limit = np.deg2rad(gyro_limit_dps)
         self.k = lever_scale                 # |r_perp| in m; None = not calibrated yet
         self.r_perp = None                   # identified perpendicular lever-arm vector
         self.lever_arm_est = None            # identified full lever-arm vector
         self.ema = float(ema)                # 0 = use the raw algebraic solution
         self.jitter_augment = jitter_augment
-        self.tol = tol
+        self.tol = float(tol)
         self._w_hat = None
+        self.sat_frac = float(sat_frac)
         self.auto_calibrated = False
 
     # ------------------------------------------------------------------ helpers
@@ -53,7 +79,15 @@ class LeverArmObserver:
         self._w_hat = None
 
     def saturated(self, gyro: np.ndarray) -> np.ndarray:
-        return np.abs(np.abs(gyro) - self.gyro_limit) <= self.tol
+        """Per-axis saturation.  Uses a *relative* margin, not an exact-equality test.
+
+        The measured rate is not exactly at the rail: the sensor rails first and the noise is added
+        (or vice versa), so a sample that is 0.3 % below the limit may be a clipped one.  With the
+        old ``|‖g‖ - lim| <= 1e-6`` test the scan reported "no saturated sample" on windows that the
+        data itself flags as saturated, which silently turned `k` into NaN -> 0.
+        """
+        g = np.asarray(gyro, float)
+        return np.abs(g) >= self.gyro_limit * (1.0 - self.sat_frac) - self.tol
 
     @staticmethod
     def residual(accel: np.ndarray, thrust_over_mass) -> np.ndarray:
@@ -172,32 +206,50 @@ class LeverArmObserver:
         return np.stack(out)
 
     def identify_lever_arm(self, gyros, accels, thrusts, dt: float, ridge: float = 1e-10,
-                           use_tangential: bool = True) -> np.ndarray:
-        """Least-squares identification of the full lever-arm vector from *in-range* samples.
+                           use_tangential: bool = True, weights=None, smooth: int = 5,
+                           margin: int = 2, n_min: int = 8) -> np.ndarray:
+        """Weighted LS of the full lever-arm vector over the contiguous in-range part of the log.
 
         Uses both lever-arm terms, so it stays accurate through the spin-up transient where the
         tangential term dominates:
 
             s_i = a_m - (T/M) e_z = ( -[wdot_i]_x + w_i w_i^T - |w_i|^2 I ) r
 
-        which is **linear in r**.  Samples with any saturated axis are discarded; ``wdot`` comes
-        from finite differences of the (in-range, hence exact) gyro.
+        which is **linear in r**.  Three things the first version got wrong:
+
+        * ``wdot`` must be differentiated on the *sample grid*, never on the compacted in-range
+          subset: that subset has gaps where the gyro saturated, so a finite difference across a gap
+          spans an unknown time and corrupts exactly the transient the tangential term exists for.
+          Instead erode the mask by ``margin`` samples and differentiate the full sequence.
+        * the gyro is noisy and differentiation amplifies it by 1/dt, so smooth before differencing
+          (a centred moving average of ``smooth`` samples).
+        * ``|s|`` grows as ``|w|^2``, so the SNR of each row does too -- weight rows by ``|w|^2``
+          (or by the caller's ``weights`` over the kept subset).
         """
         gyros, accels, thrusts = map(np.asarray, (gyros, accels, thrusts))
-        keep = ~np.stack([self.saturated(g) for g in gyros]).any(axis=1)
-        if int(keep.sum()) < 4:
-            raise ValueError(f"identify_lever_arm: only {int(keep.sum())} unsaturated samples")
-        G, S = gyros[keep], self.residual(accels, thrusts)[keep]
-        Wdot = np.gradient(G, dt, axis=0) if use_tangential else np.zeros_like(G)
-        rows, rhs = [], []
-        for w, wd, s in zip(G, Wdot, S):
-            M = -_skew(wd) + np.outer(w, w) - float(w @ w) * np.eye(3)
-            rows.append(M)
-            rhs.append(s)
-        A, b = np.vstack(rows), np.concatenate(rhs)
-        r = np.linalg.solve(A.T @ A + ridge * np.eye(3), A.T @ b)
+        sat = np.stack([self.saturated(g) for g in gyros])
+        keep = ~sat.any(axis=1)
+        m = max(int(margin), (int(smooth) // 2) + 1) if use_tangential else int(margin)
+        keep = _erode(keep, m) if m > 0 else keep
+        if int(keep.sum()) < n_min:
+            raise ValueError(f"identify_lever_arm: only {int(keep.sum())} usable in-range samples")
+        Gs = _smooth(gyros, smooth) if smooth and smooth > 1 else gyros
+        S = self.residual(accels, thrusts)
+        Wdot = np.gradient(Gs, dt, axis=0) if use_tangential else np.zeros_like(Gs)
+        A = np.stack([(-_skew(wd) + np.outer(w, w) - float(w @ w) * np.eye(3))
+                      for w, wd in zip(Gs[keep], Wdot[keep])]).reshape(-1, 3)
+        b = S[keep].reshape(-1)
+        if weights is None:
+            weights = np.linalg.norm(gyros[keep], axis=1) ** 2
+        wv = np.maximum(np.asarray(weights, float).reshape(-1), 1e-6)
+        wv = np.repeat(wv[:, None], 3, axis=1).reshape(-1)      # one weight per (row, axis) entry
+        if len(wv) != len(A):
+            wv = np.ones(len(A))
+        Aw = A * wv[:, None]
+        r = np.linalg.solve(Aw.T @ A + ridge * np.eye(3), Aw.T @ b)
         self.lever_arm_est = r
         self.k = float(np.linalg.norm(r))
+        self.n_inrange = int(keep.sum())
         return r
 
     def calibrate_scan(self, gyros, accels, thrusts, k_lo: float = 1e-4, k_hi: float = 6e-2,

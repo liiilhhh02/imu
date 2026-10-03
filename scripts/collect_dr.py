@@ -94,7 +94,8 @@ def _one_episode_impl(job):
                           gyro_noise_std=float(rng.uniform(0.01, 0.10)),
                           accel_noise_std=float(rng.uniform(0.005, 0.05)),
                           gyro_bias_std=float(rng.uniform(0.0, 0.04)),
-                          gyro_scale_std=float(rng.uniform(0.0, 0.03))))
+                          gyro_scale_std=float(rng.uniform(0.0, 0.03)),
+                          seed=int(seed % (2 ** 31))))     # else every episode draws the same bias/noise
     env.eval = False
     env.reset()
     import pybullet as p
@@ -112,18 +113,12 @@ def _one_episode_impl(job):
     # --- episode structure: a NOMINAL phase first (hover + a deliberate yaw-identification
     # manoeuvre, which is what makes every prior identifiable from flight data), then the fault ---
     t_fault = int(rng.integers(int(0.12 * steps), int(0.6 * steps)))
-    mode = str(rng.choice(["random", "random", "policy", "indi"]))
+    mode = str(rng.choice(["random", "random", "policy", "random"]))
     policy = pid = None
     if mode == "policy" and flag in CKPT:
         policy = load_policy(CKPT[flag])
         pid = PositionPID()
     u_plan = _excite_random(rng, freq, mask, steps) if mode == "random" else None
-    try:
-        from gpd_me.indi import INDIController, PositionController as IndiPos, \
-            PrimaryAxisAttitudeController, ALLOCATION_FULL
-        indi_ok = True
-    except Exception:
-        indi_ok = False
 
     L = {k: [] for k in ("a", "g", "u", "w", "q", "v", "tom", "sat", "mask")}
     # nominal yaw-identification excitation: a differential that spins the body at 2-12 rad/s
@@ -132,7 +127,8 @@ def _one_episode_impl(job):
     #   stage A (0.2 s) apply a known differential and measure the yaw-rate response -> gain estimate
     #   stage B apply an open-loop profile whose amplitude targets ~30 % of the gyro range
     yid_f = rng.uniform(0.3, 2.0)
-    yid_target = 0.30 * np.deg2rad(dps)
+    yid_target = 0.55 * np.deg2rad(dps)      # was 0.30*range: at 100-300 dps that is 0.5-1.6 rad/s,
+    #                                          where |s| = k|w|^2 is at the accelerometer noise level
     yid_d0 = rng.uniform(0.3, 1.0)
     yid_tA = int(0.2 / dt)
     yid_amp, yid_w0, yid_t0 = None, None, None
