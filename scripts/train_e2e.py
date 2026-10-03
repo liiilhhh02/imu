@@ -170,6 +170,14 @@ def build_dataset(eps, verbose=True):
     # boundary mix the previous episode's final frame into R0 (found by the post-fix review)
     ok[WINDOW:] = ep[:len(ep) - WINDOW] == ep[WINDOW:]
     D["OKW"] = np.where(ok)[0]
+    # window ends grouped by episode: the closed-loop failure mode the tolerance probe exposed
+    # (docs/STATUS.md, "闭环容忍度曲线") is a *slowly varying / bias-like* rate error -- it integrates
+    # into attitude drift over seconds, and a per-window loss cannot see it because it cancels
+    # between windows of the same flight.  Grouping the batch by episode makes that visible.
+    _ow = {}
+    for _i in D["OKW"]:
+        _ow.setdefault(int(D["EP"][_i]), []).append(_i)
+    D["OKW_BY_EP"] = {k: np.asarray(v) for k, v in _ow.items() if len(v) >= 4}
     D["SAT"] = D["SAT"] > 0.5
     D["INR"] = D["INR"] > 0.5
     if verbose:
@@ -221,6 +229,9 @@ def main():
     ap.add_argument("--hidden", type=int, default=128, help="network width (deployability matters: "
                                                             "137 KB int8 at 128x1)")
     ap.add_argument("--layers", type=int, default=1, help="GRU layers")
+    ap.add_argument("--ep_group", type=int, default=1,
+                    help="windows per episode in a batch (K); >1 enables the cross-window bias term")
+    ap.add_argument("--ep_bias", type=float, default=0.0, help="weight of the cross-window bias loss")
     # ---- step 3: ablation switches ----
     ap.add_argument("--ablate", default="", help="comma list of loss terms to drop: "
                                                   "bias,att,phys,torque,spec,prior")
@@ -315,6 +326,14 @@ def main():
         l_torque = ((huber(r_tq / sc_tq) * keep).sum() / keep.sum().clamp_min(1.0))
         errv = w_hat - B["w_true"]
         l_bias = huber(errv.mean(dim=1).abs().sum(-1)).mean()          # window-mean error = stable lag
+        # Cross-window bias within the same episode: with K windows per episode in the batch, the mean
+        # error *across* them is the seconds-scale systematic component -- exactly the quantity the
+        # tolerance probe showed the closed loop cannot absorb.  (Zero when K == 1.)
+        if K > 1 and errv.shape[0] % K == 0:
+            ev = errv.reshape(errv.shape[0] // K, K, errv.shape[1], 3).mean(dim=1)
+            l_epbias = huber(ev.abs().sum(-1)).mean()
+        else:
+            l_epbias = l_bias * 0.0
         # spectral regulariser on ALL THREE axes (it used to be z-only).  The true rate is band-limited on
         # every axis (95 % of the power below 7.1 Hz), so energy above ~10 Hz in the estimate is error.
         # The z-only version barely mattered in the ablation (7.04 vs 6.60 when dropped) precisely
@@ -334,15 +353,24 @@ def main():
                        + huber(g_T - B["prior_t"][:, 3]).mean())
         total = (l_rate + w("att", 0.5 * l_att) + w("phys", 0.3 * l_phys)
                  + w("torque", 0.1 * l_torque)
-                 + w("spec", 0.05 * l_spec) + w("prior", 2.0 * l_prior) + w("bias", 1.0 * l_bias))
+                 + w("spec", 0.05 * l_spec) + w("prior", 2.0 * l_prior) + w("bias", 1.0 * l_bias)
+                 + a.ep_bias * l_epbias)
         return total, dict(rate=l_rate, att=l_att, phys=l_phys, torque=l_torque,
-                           spec=l_spec, prior=l_prior, bias=l_bias), w_hat, R_hat
+                           spec=l_spec, prior=l_prior, bias=l_bias, epbias=l_epbias), w_hat, R_hat
 
     print("\n=== training (stage 1: physics head only; stage 2: + parameter head) ===")
     t0 = time.time()
     for it in range(a.iters):
         stage1 = it < a.stage2
-        idx = rng.choice(Dtr["OKW"], size=a.batch)
+        K = max(1, int(a.ep_group))
+        if K > 1:                                  # K windows from each of batch/K episodes
+            eps_keys = list(Dtr["OKW_BY_EP"].keys())
+            pick = rng.choice(len(eps_keys), size=max(1, a.batch // K), replace=True)
+            parts = [rng.choice(Dtr["OKW_BY_EP"][eps_keys[j]], size=K, replace=False)
+                     for j in pick]
+            idx = np.concatenate(parts)
+        else:
+            idx = rng.choice(Dtr["OKW"], size=a.batch)
         B = gather(Dtr, idx, dev)
         opt.zero_grad(set_to_none=True)
         with torch.autocast("cuda", enabled=bool(a.amp) and dev.type == "cuda"):
@@ -366,7 +394,7 @@ def main():
             print(f"  it{it:5d} {'S1' if stage1 else 'S2'} L={float(loss):8.3f} "
                   f"| rate {float(parts['rate']):7.3f} att {float(parts['att']):6.3f} "
                   f"phys {float(parts['phys']):6.3f} torq {float(parts['torque']):6.3f} "
-                  f"spec {float(parts['spec']):5.3f} bias {float(parts['bias']):6.3f} prior {float(parts['prior']):6.3f} "
+                  f"spec {float(parts['spec']):5.3f} bias {float(parts['bias']):6.3f} prior {float(parts['prior']):5.3f} epb {float(parts['epbias']):6.3f} "
                   f"| val L={float(lv):8.3f} rate {float(pv['rate']):7.3f} att {float(pv['att']):6.3f} "
                   f"({time.time()-t0:4.0f}s)")
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
