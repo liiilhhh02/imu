@@ -411,12 +411,66 @@ def test_plant(n, args):
     n.zero_wrench()
 
 
+def replay_cmd(k):
+    if k < 100:
+        return np.array([2.4525, 2.4525, 2.4525, 2.4525])
+    if k < 200:
+        return np.array([3.4525, 1.4525, 3.4525, 1.4525])
+    if k < 340:
+        return np.array([2.4525, 2.4525, 2.4525, 2.4525])
+    return np.array([0.0, 0.0, 3.0, 4.5])
+
+
+def replay_lag(thrust, forces, dt, delay):
+    for i in range(4):
+        if forces[i] == 0.0:
+            thrust[i] = thrust[i] * np.exp(-2 * dt / delay)
+        else:
+            n0 = np.sqrt(max(thrust[i], 0.0) / forces[i])
+            nr = 1.0 + (n0 - 1.0) * np.exp(-dt / delay)
+            thrust[i] = forces[i] * (nr ** 2)
+    return thrust
+
+
+def test_replay(n, args):
+    """Forced-input replay: the same recorded command sequence as /tmp/pb_replay.py, logged every
+    control step, so the Gazebo plant can be compared trajectory-by-trajectory with pybullet."""
+    n.reset(z=1.0)
+    lag = np.full(4, 2.4525) if args.cmdset == "yaw" else np.zeros(4)
+    rows = []
+    mask = np.ones(4)
+    for k in range(args.steps):
+        st = n.get()
+        rows.append((k * CTRL_DT, st[0].copy(), st[1].copy(), st[3].copy(), st[2].copy()))
+        if args.cmdset == "yaw":
+            base, d, sg, k0 = 2.4525, args.d, args.dsign, 20
+            u = (np.full(4, base) if k < k0 else
+                 np.array([base + sg * d, base - sg * d, base + sg * d, base - sg * d]))
+        else:
+            u = replay_cmd(k)
+        lag = replay_lag(lag, np.clip(u, 0.0, 15.0) * mask, CTRL_DT, args.delay)
+        f, t = mixer_body_wrench(lag)
+        w = Wrench()
+        w.force = Vector3(x=float(f[0]), y=float(f[1]), z=float(f[2]))
+        w.torque = Vector3(x=float(t[0]), y=float(t[1]), z=float(t[2]))
+        n.pub.publish(w)
+        n.wait_sim(CTRL_DT)
+    n.zero_wrench()
+    t = np.array([r[0] for r in rows]); pos = np.array([r[1] for r in rows])
+    quat = np.array([r[2] for r in rows]); ang = np.array([r[3] for r in rows])
+    vel = np.array([r[4] for r in rows])
+    np.savez(args.out, t=t, pos=pos, quat=quat, ang=ang, vel=vel)
+    print(f"TEST replay: {len(rows)} control steps ({t[-1]+CTRL_DT:.2f}s) -> {args.out}")
+    print(f"     final z={pos[-1][2]:.4f} quat={np.round(quat[-1],4)} ang={np.round(ang[-1],3)}")
+
+
 TESTS = {
     "freefall": test_freefall,
     "hover": test_hover,
     "trace": test_trace,
     "statecmp": test_statecmp,
     "plant": test_plant,
+    "replay": test_replay,
     "tilt": test_tilt,
     "rotor": test_rotor,
     "torquex": lambda n, a: test_torque(n, a, 0),
@@ -436,6 +490,12 @@ def main():
                     help="rotor thrust [N] or pure torque [N.m] for the torque tests")
     pa.add_argument("--sync", default="clock", choices=["clock", "wall"])
     pa.add_argument("--spin", type=float, default=-25.0)
+    pa.add_argument("--steps", type=int, default=400)
+    pa.add_argument("--delay", type=float, default=0.026)
+    pa.add_argument("--out", default="/tmp/gz_replay.npz")
+    pa.add_argument("--cmdset", default="full", choices=["full", "yaw"])
+    pa.add_argument("--d", type=float, default=1.5)
+    pa.add_argument("--dsign", type=float, default=1.0)
     args = pa.parse_args()
 
     rclpy.init()
