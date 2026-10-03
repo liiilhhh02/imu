@@ -3,11 +3,11 @@ Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or conta
 Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
 See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
 [gz] spawn success=True
-[gz] state rate 1001 Hz -> substeps=5 (control at 200 Hz)
-[gz] fault IC spin=[  1.558   1.236 -25.997] rad/s  set=True
-[gz] prior=[-1.246000e-02 -1.820000e-03 -3.820000e-03  1.025520e+00  4.033580e+00
-  2.806940e+00  1.745329e+01  2.609000e-02  1.267000e-02]
-[gz] fault IC spin=[  1.558   1.236 -25.997] rad/s  set=True
+[gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
+[gz] fault IC spin=[ -2.651  -1.195 -24.298] rad/s  set=True
+[gz] prior=[-9.500000e-03 -1.680000e-03 -7.450000e-03  1.087920e+00  3.961230e+00
+  2.745180e+00  1.745329e+01  2.612000e-02  1.060000e-02]
+[gz] fault IC spin=[ -2.651  -1.195 -24.298] rad/s  set=True
 [gz] WARNING: /home/liiil/Downloads/me/results/e2e_v7.pt cannot be loaded (size mismatch for encoder.0.weight: copying a param with shape torch.Size([128, 28]) from checkpoint, the shape in current model is torch.Size([128, 29]).); the 'net' row falls back to the algebraic estimate.
 [gz] src=alg ckpt=e2e_v7.pt compatible=False
-RESULT gz flag=3 dps=1000 src=alg: z_last=-429.39 (std 53.52) xy_last=291.073 |w|=  38.4 rad/s wz= -27.64 sat= 100% rate_err=  9.41 att_last=114.8deg tilt_med= 85.1deg att_med= 87.0deg loop=133.0Hz
+RESULT gz flag=3 dps=1000 src=alg: z_last=-109.01 (std 32.80) xy_last=186.801 |w|=  36.6 rad/s wz= -26.49 sat= 100% rate_err=  8.21 att_last=117.2deg tilt_med= 69.5deg att_med= 62.8deg loop=140.6Hz

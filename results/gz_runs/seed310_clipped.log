@@ -4,5 +4,5 @@ Users of this version of Gym should be able to simply replace 'import gym' with 
 See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
 [gz] spawn success=True
 [gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
-[gz] fault IC spin=[  1.022   0.36  -24.76 ] rad/s  set=True
-RESULT gz flag=3 dps=1000 src=truth: z_last=  -9.32 (std  6.75) xy_last=30.807 |w|=  40.6 rad/s wz= -32.59 sat= 100% rate_err=  0.00 att_last= 77.7deg tilt_med=  0.0deg att_med= 38.8deg loop=193.8Hz
+[gz] fault IC spin=[  0.112   2.742 -25.343] rad/s  set=True
+RESULT gz flag=3 dps=1000 src=clipped: z_last=-141.38 (std 25.41) xy_last= 6.480 |w|=  46.1 rad/s wz= -24.68 sat= 100% rate_err= 15.70 att_last= 80.9deg tilt_med=  0.0deg att_med= 65.7deg loop=192.8Hz
