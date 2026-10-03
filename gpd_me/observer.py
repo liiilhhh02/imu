@@ -73,6 +73,8 @@ class LeverArmObserver:
         self._w_hat = None
         self.sat_frac = float(sat_frac)
         self.auto_calibrated = False
+        self.scale_identified = False       # set by calibrate_scan: is the lever scale pinned by data?
+        self.k_flat = float("nan")          # cost(2k)/cost(k): ~5 when identified, ~1 when collapsed
 
     # ------------------------------------------------------------------ helpers
     def reset(self):
@@ -295,7 +297,18 @@ class LeverArmObserver:
                 hi = m2
             else:
                 lo = m1
-        self.k = 0.5 * (lo + hi)
+        k_best = 0.5 * (lo + hi)
+        c_best, _ = cost_of(k_best)
+        # Identifiability veto.  The scan can *collapse*: pick a k ten to thirty times too small,
+        # shrink r as 1/|w|^2 along with it and still drive the residual down, because both r and k
+        # enter only through the product.  Such a k is catastrophic downstream (the saturated axis
+        # comes back inflated by the same factor), so ask the cost curve whether the scale is pinned:
+        # doubling the scale must make the fit measurably worse.  On a well-posed window the cost
+        # grows ~k^2.4 (measured), i.e. ~5x at 2k; a collapse stays flat.
+        c2, _ = cost_of(2.0 * k_best)
+        self.k_flat = float(c2 / max(c_best, 1e-12))
+        self.scale_identified = bool(np.isfinite(self.k_flat) and self.k_flat > 1.5)
+        self.k = float(k_best)
         _, self.lever_arm_est = cost_of(self.k)
         self.r_perp = self.lever_arm_est
         return self.k

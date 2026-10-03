@@ -2,8 +2,15 @@
 
 Episode structure (identical to the data collector, so the deployment procedure is exercised):
     1. nominal phase: hover + the two-stage OPEN-LOOP yaw-identification manoeuvre
-       -> every prior the estimator needs is identified from this flight data only
-    2. fault injection (adjacent-pair dual failure by default)
+    2. fault injection (adjacent-pair dual failure by default) + `POST_FAULT_S` of further
+       OPEN-LOOP excitation
+       -> every prior the estimator needs is identified from this flight data only (gyro,
+          accelerometer, commanded thrust, per-sample alive mask, velocity).  The post-fault window
+          is part of the identification on purpose: it is where the body spins fast enough to
+          saturate the gyro, so the lever arm's `|r_perp|` becomes observable (`id_lever_arm`'s
+          saturated scan / the in-range LS both need it).  The nominal hover alone never saturates
+          at >=1000 dps and `k` then degrades to `‖r_LS‖`.  Open loop, not the policy: a closed loop
+          would correlate the yaw command with the yaw rate and bias `id_yaw_channel`'s ARX.
     3. closed loop: outer position PID -> ACRL policy -> thrusts, with the attitude expressed by an
        INS and the controller's rate input taken from one of
 
@@ -63,6 +70,9 @@ from gpd_me.priors import identify_priors, tom_from_command  # noqa: E402
 MASK = {0: [0, 1, 1, 1], 3: [0, 0, 1, 1]}
 CKPT_RL = {0: "shutdown_real_7", 3: "shutdown_real_7_4"}
 DT = 1.0 / 200.0
+POST_FAULT_S = 1.5       # open-loop logging appended after the fault for identification (seconds)
+#                          (this is where the gyro saturates, so the lever arm's |r_perp| becomes
+#                          identifiable; the healthy hover alone never saturates at >=1000 dps)
 _WARNED = set()          # checkpoints already reported as incompatible (loud once, not per run)
 
 
@@ -185,28 +195,68 @@ def make_env(dps):
     return env
 
 
-def identification(seed=0, dps=1000.0, flag=3):
-    """The deployment procedure's first half: hover + the open-loop yaw manoeuvre -> priors.
+def open_loop_transient(env, steps, seed):
+    """Open-loop excitation for the first seconds after the fault — identification data only.
+
+    This is where the lever arm is actually identifiable: right after the failure the body spins
+    fast enough to saturate the gyro, and `id_lever_arm`'s saturated-window scan then recovers
+    `k = |r_perp|` directly.  The nominal hover alone never saturates (at 1000 dps), so the scan
+    raises and `k` degrades to `‖r_LS‖` — the BLOCKER-4 failure mode.  The flight here must stay
+    **open loop**: closing the senior's policy around the vehicle would correlate the yaw command
+    with the yaw rate and bias `id_yaw_channel`'s ARX.  Everything logged (gyro, accelerometer,
+    commanded thrust, per-sample alive mask, velocity) is measurable on the real aircraft.
+    """
+    rng = np.random.default_rng(seed * 7919 + 13)
+    mask = np.asarray(env.shut_down, float)
+    base = float(env.M) * 9.81 / max(float(mask.sum()), 1.0)      # 2 alive rotors carry the weight
+    walk = rng.normal(0.0, 0.05, 4)
+    freqs = rng.uniform(0.2, 8.0, 4)
+    phases = rng.uniform(0, 2 * np.pi, 4)
+    amps = rng.uniform(0.0, 3.0, 4)
+    L = {k: [] for k in ("a", "g", "u", "w", "v", "tom", "mask")}
+    for i in range(steps):
+        env._computeObs()
+        walk = np.clip(walk * 0.995 + rng.normal(0.0, 0.05, 4), -1.5, 1.5)
+        u_cmd = np.clip(base + walk + amps * np.sin(2 * np.pi * freqs * i * DT + phases), 0.0, 15.0)
+        L["a"].append(env.accel_meas.copy()); L["g"].append(env.gyro_meas.copy())
+        L["u"].append(u_cmd); L["w"].append(env.omega_true.copy())
+        L["v"].append(env.vel[0].copy()); L["tom"].append(float(np.atleast_1d(env.last_acc)[0]))
+        L["mask"].append(np.asarray(env.shut_down, float).copy())
+        env.target_a, env.target_z_body = 9.81, np.array([0.0, 0.0, 1.0])
+        env.step(u_cmd / 7.5 - 1.0)
+    return {k: np.array(v) for k, v in L.items()}
+
+
+def identification(seed=0, dps=1000.0, flag=3, post_s=None):
+    """The deployment procedure's first half: hover + the open-loop yaw manoeuvre, then the fault
+    and its open-loop transient -> priors.
 
     Returns ``(prior, diag, fault_rng, ic)``.  `fault_rng` is the global numpy RNG state captured
     immediately *before* ``shut_down_rotors(flag)`` (the env's own fault injection) and `ic` the
     resulting post-fault state.  Replaying that into a fresh environment reproduces one fault draw
     exactly, which is what makes the per-`src` comparison paired: every `src` sees the same initial
     spin, the same sensor-noise stream and the same commanded sequence.
+
+    `post_s` (default `POST_FAULT_S`, 0 disables) is the length of open-loop logging after the fault
+    that is appended to the identification log.
     """
+    post_s = POST_FAULT_S if post_s is None else post_s
     np.random.seed(seed)
     env = make_env(dps)
     env.reset()
     env.shut_down = np.ones(4)                       # healthy for the identification phase
     d = nominal_phase(env, steps=int(1.6 / DT), dps=dps, seed=seed)
-    prior, diag = identify_priors(d["g"], d["a"], d["u"], d["w"], d["mask"], dps, DT,
-                                  vel=d["v"], tom=d["tom"])
     fault_rng = np.random.get_state()
     env.shut_down_rotors(flag)      # reset() + mask + (flags 2/3) the initial yaw spin
     assert np.array_equal(env.shut_down, MASK[flag]), (env.shut_down, MASK[flag])
     ic = (env.pos[0].copy(), env.quat[0].copy(), env.vel[0].copy(),
           np.asarray(env.ang_vel, float).copy().ravel())
+    if post_s > 0:                                   # saturated window -> identifiable |r_perp|
+        d2 = open_loop_transient(env, int(post_s / DT), seed)
+        d = {k: np.concatenate([d[k], d2[k]], axis=0) for k in d}
     env.close()
+    prior, diag = identify_priors(d["g"], d["a"], d["u"], d["w"], d["mask"], dps, DT,
+                                  vel=d["v"], tom=d["tom"])
     return prior, diag, fault_rng, ic
 
 
@@ -223,6 +273,10 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
     env.reset()
     np.random.set_state(fault_rng)                   # the env's own fault injection, same draw
     env.shut_down_rotors(flag)
+    # NB: from here on the loop is byte-identical to scripts/verify_ins_attitude.run(...) with the
+    # same post-fault state.  It is not loop fidelity that decides survival -- the closed loop is on
+    # the stability boundary and ~15 % of the env's own injected spins escape regardless (see the
+    # module docstring); that is why the caller reports a distribution over draws, never one seed.
     assert np.array_equal(env.shut_down, MASK[flag]), (env.shut_down, MASK[flag])
     if ic is not None:                               # exact same post-fault state for every src
         p.resetBasePositionAndOrientation(env.DRONE_IDS[0], ic[0].tolist(), ic[1].tolist(),

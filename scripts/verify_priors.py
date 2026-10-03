@@ -52,18 +52,25 @@ def one(fn):
                                       tom=np.asarray(z["tom"], float))
         tr = z["true"][0]
         r_true = np.asarray(tr[0], float); M_true = float(tr[1]); tau_true = float(tr[3])
+        ps = np.asarray(z["prior"], float).ravel()
         d = _mean_dir(omega, sat)
         if d is None:
             return None
         perp = lambda r: r - (r @ d) * d
         k_true = float(np.linalg.norm(perp(r_true)))
         r_hat = np.asarray(prior[:3], float)
+        # what the *training run* will actually read: the prior stored in the shard.  Reporting only the
+        # freshly recomputed values once hid a whole class of stale/broken stored priors.
+        stored = dict(tau=float(ps[7]), k=float(ps[8]), gT=float(ps[3])) if ps.size >= 9 else {}
         tom_hat = tom_from_command(u, mask_t, dt, float(prior[3]), float(prior[7]))
         s = accel - np.array([0.0, 0.0, 1.0])[None, :] * tom_hat[:, None]
         w_alg = algebraic_estimate(gyro, s, float(prior[8]), sat, lim)
         sm = sat.any(axis=1)
         lag = lambda w: float(np.linalg.norm((w - omega)[sm].mean(0))) if sm.any() else np.nan
+        k_id = float(prior[8])
+        k_unknown = bool((not np.isfinite(k_id)) or k_id <= 0)
         return dict(dps=dps, flag=float(z["flag"]), how=diag["how"], torque_ok=diag["torque_ok"],
+                    k_unknown=k_unknown,
                     tau_hat=float(prior[7]), tau_true=tau_true,
                     tau_err=100.0 * (float(prior[7]) - tau_true) / max(tau_true, 1e-6),
                     tom_err=float(diag.get("tom_err_rel", np.nan)),
@@ -72,6 +79,12 @@ def one(fn):
                     r_perp_err=float(np.linalg.norm(perp(r_hat) - perp(r_true))) * 1e3,
                     r_err=float(np.linalg.norm(r_hat - r_true)) * 1e3,
                     gT_err=100.0 * (float(prior[3]) - 1.0 / M_true) * M_true,
+                    stored_tau_err=(100.0 * (stored["tau"] - tau_true) / max(tau_true, 1e-6)
+                                    if stored else np.nan),
+                    stored_k_err=(100.0 * (stored["k"] - k_true) / max(k_true, 1e-9)
+                                  if stored else np.nan),
+                    stored_gT_err=(100.0 * (stored["gT"] - 1.0 / M_true) * M_true
+                                   if stored else np.nan),
                     lag_alg=lag(w_alg), lag_clip=lag(gyro), n_sat=int(sm.sum()))
     except Exception as e:
         import traceback
@@ -107,11 +120,13 @@ def main():
 
     print(f"{'metric':>28} {'median':>9} {'5%':>9} {'95%':>9}   n")
     rows = [("tau err (%)", [r["tau_err"] for r in res]),
+            ("tau err (%), STORED", [r["stored_tau_err"] for r in res]),
             ("T/M rel err", [r["tom_err"] for r in res]),
-            ("k = |r_perp| err (%)", [r["k_err"] for r in res]),
-            ("|r_perp| err (mm)", [r["r_perp_err"] for r in res]),
+            ("k err (%), identified only", [r["k_err"] for r in res if not r["k_unknown"]]),
+            ("|r_perp| err (mm), identified", [r["r_perp_err"] for r in res if not r["k_unknown"]]),
+            ("k declared unknown (%)", [100.0 * float(r["k_unknown"]) for r in res]),
+            ("g_T err (%), STORED", [r["stored_gT_err"] for r in res]),
             ("|r| err (mm, incl. axial)", [r["r_err"] for r in res]),
-            ("g_T err (%)", [r["gT_err"] for r in res]),
             ("lag algebraic (rad/s)", [r["lag_alg"] for r in res]),
             ("lag clipped (rad/s)", [r["lag_clip"] for r in res])]
     for name, v in rows:

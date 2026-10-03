@@ -25,7 +25,7 @@ parameters stored in the shards) and the retrained-network numbers produced by `
 | BLOCKER 1 — hardcoded 200 Hz | fixed | per-window `dt` in the INS rollout, `wdot`, the spectral mask and the evaluation |
 | BLOCKER 2 — global-mean metric | fixed | per-flight lag is now the headline number |
 | BLOCKER 3 — `s` built from the simulated true thrust | fixed | command → identified `g_T` → identified actuator lag `τ`; `T/M` reproduced to 1.9 % median (0.3 % at the 5th percentile) |
-| BLOCKER 4 — `k = ‖r‖` | fixed | `k = \|r⊥\|` per sample; median error −2.6 % (+1.6 % above 1500 dps) |
+| BLOCKER 4 — `k = ‖r‖` | fixed, **and the suggested fix turned out to be insufficient** | `k` now comes from the in-range LS vector when the in-range samples are strong, from the scan only when the tangential term pins its scale (veto: `cost(2k)/cost(k) < 1.5` ⇒ scale unidentifiable), and is declared *unknown* (⇒ plain clip) otherwise. See `docs/DESIGN.md` §2.1: with one pinned axis the scan's scale is exactly degenerate, which is why the reviewer's "use the scan's scalar" alone was not enough |
 | MAJOR M3 — low-range priors | fixed | no rate floor, manoeuvre at 0.55×range, scan window moved past the spin-up, route chosen by information content, `k` unknown ⇒ clip |
 | MAJOR M4 — tangential term disabled | fixed | smoothing + derivative on the sample grid + `\|ω\|²` weighting + erosion around saturation |
 | minors | fixed | dead `L_anchor` deleted (replaced by a hard bound on the slow head), `G/T` unidentifiable ⇒ torque term skipped, dead `"indi"` excitation mode deleted, per-episode IMU seed, `train_estimator.py` (window-split, claimed cross-episode) deleted outright |
@@ -44,6 +44,13 @@ Defects found **after** the review, all of them real and all fixed:
 6. **`L_torque` was dominated by the finite-difference spike across the saturation onset** (torq ≈
    9937 against O(10) for every other term, i.e. the objective was ~95 % an onset-spike penalty);
    now scale-normalised and masked around the onset.
+7. **The scan's lever scale is exactly degenerate under the ideal model** (one pinned axis ⇒
+   `cost(2k)/cost(k) ≈ 1`, measured 1.00–1.33 versus 2.0–2.1 when the tangential term pins it). The
+   reviewer's "use the scalar the scan minimised" is therefore *not sufficient*; `k` must come from
+   the identifiable in-range LS vector, and otherwise be declared unknown ⇒ clip.
+8. **`k` taken as `‖r‖` on the no-saturation path** inflated any pinned axis by 10–30×, giving
+   algebraic L1 errors of 56/94 rad/s at 3000/4000 dps on frames where the clip was already exact —
+   i.e. the estimator front end was *worse than doing nothing* and was dragging the network with it.
 
 ---
 

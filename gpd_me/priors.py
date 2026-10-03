@@ -274,6 +274,17 @@ def id_yaw_channel(u_cmd, omega_z, in_range, dt, order=2, mask=None):
 
 
 # ------------------------------------------------------------------------------------ lever arm
+def _dominant_dir_clip(gyro):
+    """Mean spin direction over a window from the *clipped* gyro (approximate: a pinned axis is
+    under-weighted, so this is only used when the reconstruction cannot be trusted)."""
+    g = np.asarray(gyro, float)
+    if not len(g):
+        return None
+    v = g.mean(axis=0)
+    n = float(np.linalg.norm(v))
+    return (v / n) if n > 1e-9 else None
+
+
 def _dominant_dir(ob: LeverArmObserver, gyro, accel, tom, k: float):
     """Mean spin direction (body frame) over a saturated window, from the reconstruction itself."""
     try:
@@ -326,12 +337,29 @@ def id_lever_arm(gyro, accel, tom, dt, lim, mask_t=None, post_win=400, pre_win=2
     if sat[seg].any():
         try:
             k_scan = float(ob.calibrate_scan(gyro[seg], accel[seg], tom[seg]))
-            r_scan = np.asarray(ob.lever_arm_est, float)
-            how.append(f"scan(n_sat={int(sat[seg].any(axis=1).sum())})")
+            if not getattr(ob, "scale_identified", False):
+                # collapsed scale (cost flat under a 2x change): the fitted r absorbed the scale, so
+                # neither k nor r is trustworthy -> declare the scale unknown instead of shipping a
+                # value that would inflate the reconstructed saturated axis by the same factor
+                how.append(f"scan_unidentified(flat={getattr(ob,'k_flat',float('nan')):.2f})")
+                k_scan = float("nan")
+            else:
+                r_scan = np.asarray(ob.lever_arm_est, float)
+                how.append(f"scan(n_sat={int(sat[seg].any(axis=1).sum())},flat={ob.k_flat:.1f})")
         except Exception:
             k_scan = float("nan")
+    # independent cross-check of the scale: the in-range samples give k = |s|/|w|^2 directly, but only
+    # when they carry a real rate (at 100-300 dps the whole range is below the signal floor)
+    if np.isfinite(k_scan) and n_strong >= 20 and n_any >= 8:
+        try:
+            k_in = float(ob.calibrate_inrange(gyro, accel, tom))
+            if np.isfinite(k_in) and k_in > 0 and not (1 / 3.0 <= k_scan / k_in <= 3.0):
+                how.append(f"k_inrange_override({k_scan*1e2:.3f}->{k_in*1e2:.3f}cm)")
+                k_scan = k_in
+        except Exception:
+            pass
     r_ls = None
-    need_ls = (n_strong >= 20) or (r_scan is None)       # weak LS beats nothing, but not a good scan
+    need_ls = (n_strong >= 20) or (r_scan is None)
     if need_ls and n_any >= 8:
         try:
             r_ls = ob.identify_lever_arm(gyro, accel, tom, dt, use_tangential=True, smooth=5)
@@ -345,12 +373,25 @@ def id_lever_arm(gyro, accel, tom, dt, lim, mask_t=None, post_win=400, pre_win=2
     else:
         return np.zeros(3), float("nan"), "fail"
     r = np.asarray(r, float)
-    d = _dominant_dir(ob, gyro[seg], accel[seg], tom[seg], k_scan) if np.isfinite(k_scan) else None
-    if d is None:                                   # nothing saturated anywhere: scale is irrelevant
-        return r, float(np.linalg.norm(r)), "+".join(how) or "inrange"
-    k = float(np.linalg.norm(r - (r @ d) * d))
+    if np.isfinite(k_scan):
+        d = _dominant_dir(ob, gyro[seg], accel[seg], tom[seg], k_scan)
+        k = float(np.linalg.norm(r - (r @ d) * d)) if d is not None else k_scan
+    elif sat[seg].any():
+        # The scan is *scale-degenerate* whenever the spin axis direction is pinned by the measured
+        # axes alone (one saturated axis, or several distributed by their clipped ratio): then
+        # `|s_i| = |w_i|^2 |r_perp|` with `|w_i|^2 = |s_i|/k` is a tautology and any k fits equally
+        # well -- measured cost(2k)/cost(k) = 1.00-1.33 for a collapse versus 2.0-2.1 when the
+        # tangential term really pins it.  In that case the scale has to come from the in-range LS
+        # (weak at 100-300 dps, but the *direction* it carries is the whole point); with the clipped
+        # gyro as the direction estimate, which is only approximate under multi-axis saturation.
+        d = _dominant_dir_clip(gyro[seg])
+        k = float(np.linalg.norm(r - (r @ d) * d)) if d is not None else float("nan")
+    else:
+        # nothing saturated in the identification window: `k` is irrelevant (the clip is exact there)
+        # and is recorded as unknown rather than fabricated
+        return r, float("nan"), "+".join(how) or "nominal-only"
     if not np.isfinite(k) or k <= 0:
-        k = k_scan
+        k = k_scan if np.isfinite(k_scan) else float("nan")
     return r, k, "+".join(how)
 
 
