@@ -199,7 +199,11 @@ def main():
     while ep < a.episodes and time.time() < deadline:
         lam_ceiling = min(1.0, a.lam_max0 + (1.0 - a.lam_max0) * ep / max(a.lam_ramp, 1))
         for i, e in enumerate(envs):
-            lam = float(rng.uniform(0.0, lam_ceiling))
+            # 30 % of the environments stay at lambda = 0 (nominal anchor).  Without it the curriculum
+            # destroys the truth-rate skill: measured at ep 200 with 8 envs all at lambda <= 0.55, the
+            # lambda = 0 hold rate fell from 4/4 to 0/4 (altitude drifting to z ~ 0.2 m while the
+            # attitude stayed healthy) -- classic catastrophic forgetting on a marginal operating point.
+            lam = 0.0 if rng.random() < 0.3 else float(rng.uniform(0.0, lam_ceiling))
             # scale the *attributes* (not the object): `shut_down_rotors` -> `reset()` re-draws the
             # corruptor's bias/scale/direction from these attributes, so one episode = one fresh draw
             # at this level.  Reusing the environments keeps the pybullet client alive.

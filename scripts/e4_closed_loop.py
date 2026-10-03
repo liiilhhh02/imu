@@ -69,6 +69,11 @@ from gpd_me.priors import identify_priors, tom_from_command  # noqa: E402
 
 MASK = {0: [0, 1, 1, 1], 3: [0, 0, 1, 1]}
 CKPT_RL = {0: "shutdown_real_7", 3: "shutdown_real_7_4"}
+# `--rl_ckpt`/`--rl_dir` override the supervisor's checkpoint, so the *robustly trained* policy
+# (e.g. results/rl/robust_v2/model/robust_v2_latest) can be flown through the very same paired
+# distributional harness -- that is how the ">= 90 % of the truth-rate performance" comparison is run.
+RL_NAME = None
+RL_DIR = None
 DT = 1.0 / 200.0
 POST_FAULT_S = 1.5       # open-loop logging appended after the fault for identification (seconds)
 #                          (this is where the gyro saturates, so the lever arm's |r_perp| becomes
@@ -85,8 +90,11 @@ class NetRate:
         # prior = [r(3), g_T, G, T, range_rad, tau, k]; the algebraic front end needs k = |r_perp|
         self.g_T = float(self.prior[3]); self.tau = float(self.prior[7]); self.k = float(self.prior[8])
         self.lim = np.deg2rad(dps)
-        self.net = E2ENet().to(dev).eval()
         ck = torch.load(ckpt, map_location=dev, weights_only=False)
+        # the checkpoint records the architecture (train_e2e saves `hidden`/`layers`); rebuild the same
+        # shape or `load_state_dict` fails on a v7/v8 checkpoint.  Old checkpoints carry no such keys.
+        ck_hidden, ck_layers = int(ck.get("hidden", 128)), int(ck.get("layers", 1))
+        self.net = E2ENet(hidden=ck_hidden, layers=ck_layers).to(dev).eval()
         try:
             self.net.load_state_dict(ck["state"])
             self.compat = True
@@ -287,7 +295,7 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net = NetRate(ckpt, dev, prior, dps) if src == "net" else None
-    policy = load_policy(CKPT_RL[flag])
+    policy = load_policy(RL_NAME or CKPT_RL[flag], RL_DIR or None)
     pid = PositionPID()
     ins = AttitudeINS(quat_to_matrix(env.quat[0]))
     tp = np.array([0.0, 0.0, target[1]])
@@ -361,9 +369,14 @@ def main():
                     help="number of independent fault draws (seeds 0..N-1 through the env's own "
                          "shut_down_rotors); each src is flown from the *same* draws")
     ap.add_argument("--steps", type=int, default=2000)
+    ap.add_argument("--rl_ckpt", default=None, help="override the inner-loop policy checkpoint name "
+                                                   "(e.g. robust_v2_latest)")
+    ap.add_argument("--rl_dir", default=None, help="directory that holds it")
     ap.add_argument("--verbose", action="store_true", help="also print the per-draw final z of "
                                                            "every src (audit the escape rate)")
     a = ap.parse_args()
+    global RL_NAME, RL_DIR
+    RL_NAME, RL_DIR = a.rl_ckpt, a.rl_dir
     print("=== E4 closed loop: w_hat drives BOTH the attitude INS and the controller rate input ===")
     print(f"ckpt={a.ckpt}  mask={MASK[a.flag]}  {a.seeds} fault draws x {a.steps} steps  "
           f"(each src re-flown from the same draw)\n")
