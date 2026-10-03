@@ -309,13 +309,19 @@ def main():
         l_torque = ((huber(r_tq / sc_tq) * keep).sum() / keep.sum().clamp_min(1.0))
         errv = w_hat - B["w_true"]
         l_bias = huber(errv.mean(dim=1).abs().sum(-1)).mean()          # window-mean error = stable lag
-        # spectral regulariser: the >10 Hz mask must follow the *per-window* dt (100-400 Hz shards),
-        # else three quarters of the data is regularised against the wrong band
-        zc = w_hat[..., 2][:, None, :]
-        f = (torch.arange(WINDOW // 2 + 1, device=dev)[None, :] / WINDOW)
-        him = f > (10.0 * dtv)[:, None]
-        p = (zc * dc_[None]).sum(-1) ** 2 + (zc * ds_[None]).sum(-1) ** 2
-        l_spec = ((p * him).sum(-1) / (p * ~him).sum(-1).clamp_min(1e-6)).mean()
+        # spectral regulariser on ALL THREE axes (it used to be z-only).  The true rate is band-limited on
+        # every axis (95 % of the power below 7.1 Hz), so energy above ~10 Hz in the estimate is error.
+        # The z-only version barely mattered in the ablation (7.04 vs 6.60 when dropped) precisely
+        # because it left x and y unregularised -- and the attitude error integrates all three.
+        # The >10 Hz mask follows the per-window dt (the shards are multi-rate, 100-400 Hz).
+        ph = torch.einsum("fw,bwc->bfc", dc_, w_hat)
+        ph2 = torch.einsum("fw,bwc->bfc", ds_, w_hat)
+        p = ph ** 2 + ph2 ** 2                                   # (B, F, 3) power per freq per axis
+        f = torch.arange(WINDOW // 2 + 1, device=dev)[None, :].float() / WINDOW   # cycles/sample
+        him = f > (10.0 * dtv)[:, None]                          # (B, F)
+        num = (p * him[:, :, None]).sum(1)
+        den = (p * (~him)[:, :, None]).sum(1).clamp_min(1e-6)
+        l_spec = (num / den).mean()
         l_prior = torch.zeros((), device=dev)
         if not stage1:
             l_prior = (huber(r_id - B["prior_t"][:, :3]).mean() / 0.02

@@ -169,6 +169,9 @@ def main():
                          "update_rate must equal the physics rate); wall: wall-clock dt pacing")
     pa.add_argument("--seed", type=int, default=None,
                     help="RNG seed for the random fault initial spin (default: fresh entropy)")
+    pa.add_argument("--yaw_sign", type=int, default=-1, choices=[1, -1],
+                    help="sign of the yaw reaction torque wrt gpd_me.policy.mixer_body_wrench; the "
+                         "training env (MetaBaseAviary._physics) uses -1: KM*(-t0+t1-t2+t3)")
     a = pa.parse_args()
 
     rclpy.init()
@@ -234,7 +237,8 @@ def main():
                   else np.zeros(4))
         forces = np.clip((action + 1.0) * 7.5, 0.0, 15.0) * mask
         thrust = lag.step(forces, a.dt)
-        force, torque = mixer_body_wrench(thrust, a.km, damping_torque=-a.kappa * omega)
+        force, torque = mixer_body_wrench(thrust, a.yaw_sign * a.km,
+                                          damping_torque=-a.kappa * omega)
         if not n.apply(force, torque):
             print("[gz] wrench apply failed")
         last_action = action.copy()
