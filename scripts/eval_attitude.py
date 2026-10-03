@@ -56,7 +56,7 @@ def main():
     D = T.build_dataset(va_eps, verbose=True)
 
     sd = torch.load(a.ckpt, map_location=dev, weights_only=False)
-    net = E2ENet().to(dev)
+    net = E2ENet(hidden=int(sd.get("hidden", 128)), layers=int(sd.get("layers", 1))).to(dev)
     net.load_state_dict(sd["state"])
     net.eval()
     xf_m = torch.tensor(sd["xf_m"], dtype=torch.float32, device=dev)

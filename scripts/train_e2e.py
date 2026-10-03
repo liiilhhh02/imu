@@ -218,6 +218,9 @@ def main():
     ap.add_argument("--tilt_frames", type=int, default=12,
                     help="INS evaluation horizon in frames (12 = 60 ms); the 240 ms rollout is "
                          "dominated by the spin magnitude above ~1000 dps and is not a usable proxy")
+    ap.add_argument("--hidden", type=int, default=128, help="network width (deployability matters: "
+                                                            "137 KB int8 at 128x1)")
+    ap.add_argument("--layers", type=int, default=1, help="GRU layers")
     # ---- step 3: ablation switches ----
     ap.add_argument("--ablate", default="", help="comma list of loss terms to drop: "
                                                   "bias,att,phys,torque,spec,prior")
@@ -243,7 +246,10 @@ def main():
 
     xf_m, xf_s = Dtr["Xf"].mean(0), Dtr["Xf"].std(0) + 1e-6
     xp_m, xp_s = Dtr["Xp"].mean(0), Dtr["Xp"].std(0) + 1e-6
-    net = E2ENet().to(dev)
+    net = E2ENet(hidden=a.hidden, layers=a.layers).to(dev)
+    n_par = sum(p.numel() for p in net.parameters())
+    print(f"network: {n_par:,} parameters ({n_par*4/1024:.0f} KB fp32, {n_par/1024:.0f} KB int8)  "
+          f"hidden={a.hidden} layers={a.layers}")
     if a.load:
         net.load_state_dict(torch.load(a.load, map_location=dev, weights_only=False)["state"]); print(f"loaded {a.load}")
     opt = torch.optim.Adam(net.parameters(), lr=a.lr)
@@ -364,7 +370,8 @@ def main():
                   f"| val L={float(lv):8.3f} rate {float(pv['rate']):7.3f} att {float(pv['att']):6.3f} "
                   f"({time.time()-t0:4.0f}s)")
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
-    torch.save(dict(state=net.state_dict(), xf_m=xf_m, xf_s=xf_s, xp_m=xp_m, xp_s=xp_s), a.out)
+    torch.save(dict(state=net.state_dict(), xf_m=xf_m, xf_s=xf_s, xp_m=xp_m, xp_s=xp_s,
+                    hidden=a.hidden, layers=a.layers), a.out)
     print(f"saved {a.out}")
 
     with torch.no_grad():

@@ -367,11 +367,42 @@ def test_statecmp(n, args):
           f"{np.round(s_geo[0]-s_mod[0], 6)}  lin diff={np.round(s_geo[2]-s_mod[2], 5)}")
 
 
+def test_plant(n, args):
+    """Coupled (gyroscopic) response: fixed tumbling wrench from a spinning IC, sampled every 0.1 s.
+
+    This is the regime the fault runs live in (|w| ~ 40 rad/s, gyroscopic term ~ applied torque),
+    so it is the one an open-loop match with the pybullet reference must be checked in.
+    """
+    force = np.array([0.0, 0.0, args.force_n])
+    torque = np.array([-1.0, 0.0, 0.0])
+    n.reset(z=1.0, ang=(0.0, 0.0, args.spin))
+    w = Wrench()
+    w.force = Vector3(x=float(force[0]), y=float(force[1]), z=float(force[2]))
+    w.torque = Vector3(x=float(torque[0]), y=float(torque[1]), z=float(torque[2]))
+    print(f"TEST plant force={force} torque={torque} w0=[0,0,{args.spin}]")
+    t0 = n.sim_t
+    next_pub, next_s = t0, t0
+    print(f"     {'t':>5} {'z':>9} {'wx':>8} {'wy':>8} {'wz':>8} {'|w|':>7}")
+    while n.sim_t - t0 < args.dur:
+        if n.sim_t >= next_pub:
+            n.pub.publish(w); next_pub += CTRL_DT
+        if n.sim_t >= next_s:
+            _, quat, _, angw, _ = n.get()
+            wb = body_rate(quat, angw)
+            s = n.get()
+            print(f"     {n.sim_t-t0:5.2f} {s[0][2]:9.4f} {wb[0]:8.3f} {wb[1]:8.3f} {wb[2]:8.3f} "
+                  f"{np.linalg.norm(wb):7.2f}")
+            next_s += 0.1
+        time.sleep(0.0003)
+    n.zero_wrench()
+
+
 TESTS = {
     "freefall": test_freefall,
     "hover": test_hover,
     "trace": test_trace,
     "statecmp": test_statecmp,
+    "plant": test_plant,
     "tilt": test_tilt,
     "rotor": test_rotor,
     "torquex": lambda n, a: test_torque(n, a, 0),
@@ -390,6 +421,7 @@ def main():
     pa.add_argument("--force-n", type=float, default=2.0,
                     help="rotor thrust [N] or pure torque [N.m] for the torque tests")
     pa.add_argument("--sync", default="clock", choices=["clock", "wall"])
+    pa.add_argument("--spin", type=float, default=-25.0)
     args = pa.parse_args()
 
     rclpy.init()

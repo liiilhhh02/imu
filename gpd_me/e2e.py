@@ -167,11 +167,15 @@ def coarse_summary(gyro, sat, u_cmd, tom_hat, prior):
 # ----------------------------------------------------------------------------------------- the model
 class E2ENet(nn.Module):
     def __init__(self, fine_features: int = FINE_FEATURES, coarse: int = COARSE,
-                 hidden: int = 128, n_prior: int = N_PRIOR, n_corr: int = N_CORR):
+                 hidden: int = 128, n_prior: int = N_PRIOR, n_corr: int = N_CORR,
+                 layers: int = 1):
         super().__init__()
         self.encoder = nn.Sequential(nn.Linear(fine_features, hidden), nn.ReLU(),
                                      nn.Linear(hidden, hidden), nn.ReLU())
-        self.gru = nn.GRU(hidden, hidden, batch_first=True)
+        # `layers` lets the same recipe scale the temporal model: 140 k parameters (1 layer, 128) is
+        # already deployable (137 KB int8), so a 2-layer/192-hidden variant (~600 k, ~600 KB int8) is
+        # still inside an onboard budget and is the natural next step when the metric is capacity-bound.
+        self.gru = nn.GRU(hidden, hidden, num_layers=layers, batch_first=True)
         self.fast = nn.Linear(hidden, 3)                    # residual on the SATURATED axes only
         nn.init.zeros_(self.fast.weight); nn.init.zeros_(self.fast.bias)   # start exactly at physics
         self.slow = nn.Sequential(nn.Linear(hidden + coarse + n_prior, hidden), nn.ReLU(),

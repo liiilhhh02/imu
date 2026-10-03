@@ -115,7 +115,14 @@ class Runner(Node):
         st.reference_frame = "world"
         out = self._call(self.set_cli, SetEntityState.Request(state=st))
         print(f"[gz] fault IC spin={np.round(omega0, 3)} rad/s  set={out.success if out else None}")
-        time.sleep(0.02)
+        # start the loop on the first state message *after* the IC: any extra delay is free-fall
+        # the controller did not cause (the reference loop applies the IC and the first action in
+        # the same step), and >~2 steps of startup lag is enough to lose this chaotic run.
+        self.state = None
+        self.states_received = 0
+        t0 = time.time()
+        while self.states_received == 0 and time.time() - t0 < 2.0:
+            time.sleep(0.001)
 
     def apply(self, force, torque):
         """Publishes the body-frame wrench; the gazebo_ros_force plugin latches and applies it."""
@@ -169,6 +176,9 @@ def main():
                          "update_rate must equal the physics rate); wall: wall-clock dt pacing")
     pa.add_argument("--seed", type=int, default=None,
                     help="RNG seed for the random fault initial spin (default: fresh entropy)")
+    pa.add_argument("--substeps", type=int, default=1,
+                    help="physics steps per control step: act on every Nth /model_states message "
+                         "(requires the world's physics/state rate to be N x 200 Hz)")
     a = pa.parse_args()
 
     rclpy.init()
@@ -191,14 +201,15 @@ def main():
 
     log = {k: [] for k in ("z", "xy", "wt", "wu", "rate")}
     t_wall = time.time()
-    n_seen = n.states_received
     for i in range(a.steps):
         if a.sync == "state":
-            # sim-locked: one control step per physics step, paced by the state publisher
+            # sim-locked: act on every Nth physics step (N=1 -> one control step per physics step,
+            # paced by the state publisher)
             t0 = time.time()
-            while n.states_received == n_seen and time.time() - t0 < 2.0:
-                time.sleep(0.0001)
-            n_seen = n.states_received
+            for _ in range(a.substeps):
+                seen = n.states_received
+                while n.states_received == seen and time.time() - t0 < 2.0:
+                    time.sleep(0.0001)
         pos, quat, vel, omega_w = n.state
         R = quat_to_matrix(quat)
         omega = R.T @ omega_w
