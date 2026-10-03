@@ -308,6 +308,10 @@ class NetRate:
             self.xp_m = torch.zeros(len(self.prior), device=dev)
             self.xp_s = torch.ones(len(self.prior), device=dev)
         self.buf = {k: [] for k in ("a", "g", "u", "m")}
+        # `netr` = None when the checkpoint cannot be loaded: the residual head is zero-initialised so a
+        # fresh net would *numerically* return w_alg, but running it anyway is a trap if that assumption
+        # ever changes -- make the bypass explicit instead of relying on an initialisation detail.
+        self.bypass = not self.compat
         # The 2 s coarse summary costs a 400-sample actuator-model recursion plus a 400-frame stack; on
         # its own it dominated the per-step cost (measured 18-32 ms per control step, which forced the
         # slowed world and made the closed loop pacing-dependent).  It is a *causal 2 s* aggregate, so
@@ -328,7 +332,9 @@ class NetRate:
         tom_ = tom_from_command(u_, m_, self.dt, self.g_T, self.tau)
         w_alg = algebraic_estimate(g_, a_ - np.array([0.0, 0.0, 1.0]) * tom_[:, None],
                                    self.k, sat_, self.lim)
-        if self.mode == "alg":
+        if self.mode == "alg" or self.bypass:
+            # the analytic front end alone (either asked for, or a checkpoint that cannot be loaded --
+            # keeps the row honest instead of silently running an untrained network)
             # the analytic front end alone: separates "estimator pipeline" (priors, tom_from_command,
             # INS-driven attitude) from "network" when a closed-loop divergence is being attributed
             return w_alg[-1].astype(float)
@@ -414,21 +420,22 @@ def main():
     last_action = np.zeros(4)
     prev_omega, calib = None, {k: [] for k in ("g", "a", "t")}
 
-    # --- --src net: identify the priors from a nominal + post-fault open-loop flight, then start
-    # the closed loop from the fault IC (which setup() has not applied yet) so every --src sees the
-    # same draw (paired by --seed) ---
-    ins, netr = None, None
+    # --- priors + fault IC for EVERY src, exactly like scripts/e4_closed_loop.py ---
+    # This used to run only for net/alg, which made the sweep an unfair comparison: truth/clipped started
+    # from a free-fall spawned state (wall-time dependent!) while net/alg started from the captured
+    # post-fault state, so the rows were not the same draw at all -- and it also explained why the
+    # alg/net rows looked impossibly worse than a plain clip.  One `identification()` per run costs
+    # ~3 s of simulated time and pins the IC for all four rows, which is what makes them pairable.
+    ins = None
+    prior, _diag = n.identify(imu, lag)              # applies the fault IC internally
+    n.apply_ic()                                     # re-apply it: identical start for every src
+    ins = AttitudeINS(quat_to_matrix(n.state[1]))
     if a.src in ("net", "alg"):
-        ckpt = a.ckpt or os.path.join(ME, "results", "e2e_v7.pt")
+        ckpt = a.ckpt or os.path.join(ME, "results", "e2e_v9.pt")
         if not os.path.exists(ckpt):
             ckpt = os.path.join(ME, "results", "e2e_v8.pt")
-        prior, _diag = n.identify(imu, lag)          # applies the fault IC internally
-        n.apply_ic()                                 # same post-fault state for every src
-        ins = AttitudeINS(quat_to_matrix(n.state[1]))
         netr = NetRate(ckpt, torch.device("cpu"), prior, a.dps, a.dt, mode=a.src)
         print(f"[gz] src={a.src} ckpt={os.path.basename(ckpt)} compatible={netr.compat}")
-    else:
-        n.apply_ic()
 
     log = {k: [] for k in ("z", "xy", "wt", "wu", "rate", "att", "tilt")}
     t_wall = time.time()

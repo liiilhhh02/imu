@@ -5,4 +5,3 @@ See the migration guide at https://gymnasium.farama.org/introduction/migration_g
 [gz] spawn success=True
 [gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
 [gz] fault IC spin=[  1.022   0.36  -24.76 ] rad/s  set=True
-RESULT gz flag=3 dps=1000 src=clipped: z_last=-116.21 (std 18.88) xy_last=10.668 |w|=  47.4 rad/s wz= -22.85 sat= 100% rate_err= 16.66 att_last= 68.5deg tilt_med=  0.0deg att_med= 58.9deg loop=191.5Hz

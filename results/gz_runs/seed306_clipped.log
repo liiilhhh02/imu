@@ -1,8 +1,0 @@
-Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
-Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
-Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
-See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
-[gz] spawn success=True
-[gz] state rate 994 Hz -> substeps=5 (control at 199 Hz)
-[gz] fault IC spin=[ -2.651  -1.195 -24.298] rad/s  set=True
-RESULT gz flag=3 dps=1000 src=clipped: z_last=-116.74 (std 19.70) xy_last=28.170 |w|=  50.7 rad/s wz= -22.54 sat= 100% rate_err= 17.05 att_last= 61.3deg tilt_med=  0.0deg att_med= 60.7deg loop=193.0Hz

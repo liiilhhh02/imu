@@ -3,3 +3,12 @@
 [03:26:22] EVAL ep     0 lam=0.00: held 4/4  z_med 3.80  att_med 27.4
 [03:26:22] EVAL ep     0 lam=0.50: held 0/4  z_med -7.74  att_med 44.4
 [03:26:22] EVAL ep     0 lam=1.00: held 0/4  z_med -37.17  att_med 68.2
+[03:26:57] ep     1 lam<=0.40 rew= -69.26 att=354.6deg buf=16000 ep/s= 0.01 eta=1:58:37
+[03:27:33] ep     2 lam<=0.40 rew=-103.35 att=510.1deg buf=32000 ep/s= 0.02 eta=1:58:02
+[03:28:09] ep     3 lam<=0.40 rew= -62.28 att=392.3deg buf=48000 ep/s= 0.02 eta=1:57:25
+[03:28:45] ep     4 lam<=0.40 rew= -87.62 att=612.5deg buf=64000 ep/s= 0.02 eta=1:56:49
+[03:29:20] ep     5 lam<=0.41 rew= -88.13 att=358.4deg buf=80000 ep/s= 0.02 eta=1:56:14
+[03:29:54] ep     6 lam<=0.41 rew= -79.42 att=325.1deg buf=96000 ep/s= 0.02 eta=1:55:40
+[03:30:11] ep     7 lam<=0.41 rew= -48.55 att=216.4deg buf=112000 ep/s= 0.03 eta=1:55:24
+[03:30:26] ep     8 lam<=0.41 rew= -78.71 att=598.7deg buf=128000 ep/s= 0.03 eta=1:55:08
+[03:30:42] ep     9 lam<=0.41 rew= -93.53 att=687.5deg buf=144000 ep/s= 0.03 eta=1:54:52
