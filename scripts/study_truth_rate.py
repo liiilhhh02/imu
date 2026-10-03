@@ -47,9 +47,11 @@ def make_env(freq: int):
     return e
 
 
-def one_draw(policy, flag: int, freq: int, steps: int, target=(0.0, 0.0, 1.0), corrupt=None):
+def one_draw(policy, flag: int, freq: int, steps: int, target=(0.0, 0.0, 1.0), corrupt=None,
+             trace=False):
     """One independent fault draw, flown by the reference loop. Returns per-run statistics."""
     env = make_env(freq)
+    tr = {k: [] for k in ("z", "att", "thrust", "wy", "vz")} if trace else {}
     tp = np.array(target, dtype=float)
     env.shut_down_rotors(flag)             # the env's own IC: reset + mask + preset initial spin
     ctrl = RLControl(DroneModel.CF2X)
@@ -74,11 +76,18 @@ def one_draw(policy, flag: int, freq: int, steps: int, target=(0.0, 0.0, 1.0), c
         # the base env's ang_vel IS the true body rate (this harness always feeds the truth to the
         # controller), so there is no rate error to report here -- record the spin magnitude instead
         rate_err.append(float(np.linalg.norm(np.asarray(env.ang_vel, float).ravel())))
+        if trace:
+            tr["z"].append(float(env.pos[0][2]))
+            tr["att"].append(float(np.rad2deg(env.att_rad_error)))
+            tr["thrust"].append(float(np.sum(np.asarray(env.thrust[0], float)) / max(env.M, 1e-9)))
+            tr["wy"].append(float(np.asarray(env.ang_vel, float).ravel()[2]))
+            tr["vz"].append(float(env.vel[0][2]))
     env.close()
     zs = np.array(zs)
     w = max(50, len(zs) // 5)
     return dict(z=float(zs[-w:].mean()), z_std=float(zs[-w:].std()), z_final=float(zs[-1]),
-                att=float(np.mean(atts[-w:])), rate_err=float(np.mean(rate_err[-w:])))
+                att=float(np.mean(atts[-w:])), rate_err=float(np.mean(rate_err[-w:])),
+                trace={k: np.asarray(v) for k, v in tr.items()})
 
 
 def main():
@@ -91,6 +100,7 @@ def main():
     ap.add_argument("--rl_dir", default=os.path.join(REPO, "gym_pybullet_drones", "model"))
     ap.add_argument("--thresh_z", type=float, default=0.3)
     ap.add_argument("--thresh_std", type=float, default=3.0)
+    ap.add_argument("--trace", default=None, help="npz path: dump the trajectories of the FAILING draws")
     a = ap.parse_args()
 
     name = a.rl_ckpt or CKPT[a.flag]
@@ -100,11 +110,16 @@ def main():
 
     rows = []
     for i in range(a.draws):
-        r = one_draw(policy, a.flag, a.freq, a.steps)
+        r = one_draw(policy, a.flag, a.freq, a.steps, trace=bool(a.trace))
         held = (r["z_final"] > a.thresh_z) and (r["z_std"] < a.thresh_std)
         rows.append((held, r))
         print(f"  draw {i:2d}: held={int(held)}  z={r['z']:7.2f}  z_std={r['z_std']:6.2f}  "
               f"z_end={r['z_final']:8.2f}  att={r['att']:6.1f}deg")
+    if a.trace:
+        bad = {f"fail{i}": r["trace"] for i, (h, r) in enumerate(rows) if not h}
+        if bad:
+            np.savez_compressed(a.trace, **bad)
+            print(f"  dumped {len(bad)} failing trajectories -> {a.trace}")
 
     held = [h for h, _ in rows]
     z_ok = np.array([r["z"] for h, r in rows if h])
