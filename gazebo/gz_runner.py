@@ -38,6 +38,13 @@ import time
 import numpy as np
 import rclpy
 import torch
+
+# A batch-of-one GRU at 200 Hz is *slower* with the default thread pool (measured 2.79 ms with 24
+# threads): the sync overhead dominates.  One thread brings the whole estimator step to ~1.5-2 ms, which
+# is what lets the closed loop run in a real-time world instead of a slowed one -- and the slowed world
+# turned out to make the closed-loop outcome pacing-dependent.  The same argument the supervisor's own
+# trainer makes for its tiny nets.
+torch.set_num_threads(1)
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -301,6 +308,13 @@ class NetRate:
             self.xp_m = torch.zeros(len(self.prior), device=dev)
             self.xp_s = torch.ones(len(self.prior), device=dev)
         self.buf = {k: [] for k in ("a", "g", "u", "m")}
+        # The 2 s coarse summary costs a 400-sample actuator-model recursion plus a 400-frame stack; on
+        # its own it dominated the per-step cost (measured 18-32 ms per control step, which forced the
+        # slowed world and made the closed loop pacing-dependent).  It is a *causal 2 s* aggregate, so
+        # recomputing it every `CS_EVERY` steps (250 ms at 200 Hz) changes it negligibly while keeping
+        # the loop inside a 5 ms budget, i.e. able to run in a real-time world.
+        self._cs = None
+        self._cs_age = 10 ** 9
 
     def step(self, accel, gyro, u_cmd, mask):
         for key, val in (("a", accel), ("g", gyro), ("u", u_cmd), ("m", mask)):
@@ -319,11 +333,16 @@ class NetRate:
             # INS-driven attitude) from "network" when a closed-loop divergence is being attributed
             return w_alg[-1].astype(float)
         Na = len(self.buf["a"]); Hc = min(400, Na)
-        repc = lambda x: np.concatenate([np.repeat(x[:1], 400 - Hc, 0), x], 0) if 400 - Hc else x
-        cg = repc(np.stack(self.buf["g"][-Hc:])); cm = repc(np.stack(self.buf["m"][-Hc:]))
-        cu = repc(np.stack(self.buf["u"][-Hc:]))
-        ctom_ = tom_from_command(cu, cm, self.dt, self.g_T, self.tau)
-        cs = coarse_summary(cg, np.abs(cg) >= self.lim - 1e-9, cu, ctom_, self.prior)
+        cs = self._cs
+        if self._cs is None or self._cs_age >= 10:
+            repc = lambda x: np.concatenate([np.repeat(x[:1], 400 - Hc, 0), x], 0) if 400 - Hc else x
+            cg = repc(np.stack(self.buf["g"][-Hc:])); cm = repc(np.stack(self.buf["m"][-Hc:]))
+            cu = repc(np.stack(self.buf["u"][-Hc:]))
+            ctom_ = tom_from_command(cu, cm, self.dt, self.g_T, self.tau)
+            cs = coarse_summary(cg, np.abs(cg) >= self.lim - 1e-9, cu, ctom_, self.prior)
+            self._cs = cs
+            self._cs_age = 0
+        self._cs_age += 1
         T_ = lambda x: torch.tensor(np.asarray(x)[None], dtype=torch.float32, device=self.dev)
         with torch.no_grad():
             ft = ((T_(fine_features(a_, g_, sat_, u_, tom_, self.prior, w_alg)) - self.xf_m)

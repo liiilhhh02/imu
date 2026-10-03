@@ -9,7 +9,7 @@
            pacing the loop cannot keep up and the control interval stretches in simulated time (measured
            loop=140 Hz with |w| still correct), which would make the closed-loop comparison unfair.
            truth/clipped keep up in either world.  Restore 1000 for real-time runs. -->
-      <real_time_update_rate>200</real_time_update_rate>
+      <real_time_update_rate>1000</real_time_update_rate>
     </physics>
     <!-- gazebo_ros_state is a *WorldPlugin* -> must be declared here.
          libgazebo_ros_init / _factory / _force_system are *SystemPlugins* -> passed with -s on the
