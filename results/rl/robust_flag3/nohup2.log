@@ -21,3 +21,6 @@ pybullet build time: Jan 29 2025 23:16:28
 [01:28:58] ep     7 lam<=0.31 rew= -28.96 att=322.6deg buf=33600 ep/s= 0.05 eta=3:27:36
 [01:29:15] ep     8 lam<=0.31 rew= -27.39 att=297.3deg buf=38400 ep/s= 0.05 eta=3:27:20
 [01:29:31] ep     9 lam<=0.31 rew= -25.91 att=307.3deg buf=43200 ep/s= 0.05 eta=3:27:04
+[01:29:47] ep    10 lam<=0.31 rew= -29.37 att=329.2deg buf=48000 ep/s= 0.05 eta=3:26:47
+[01:30:03] ep    11 lam<=0.31 rew= -19.84 att=261.6deg buf=52800 ep/s= 0.05 eta=3:26:31
+[01:30:20] ep    12 lam<=0.31 rew= -21.20 att=274.5deg buf=57600 ep/s= 0.05 eta=3:26:15

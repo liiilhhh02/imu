@@ -390,7 +390,6 @@ def main():
         quantity is the training objective (`L_bias` penalises `errv.mean(dim=1)`), so a lag that
         cancels between windows inside one flight is invisible here.  The reduction is now printed
         next to the number."""
-        lags cancel, which is exactly what the loss does NOT do (it penalises each window's mean)."""
         e = (pred - B["w_true"]).cpu().numpy(); sm = B["sat"].any(-1).cpu().numpy()
         epv = np.rint(B["ep"].cpu().numpy()).astype(np.int64)
         out = []
