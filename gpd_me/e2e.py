@@ -27,7 +27,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-WINDOW = 48                      # 240 ms at 200 Hz (the rate is 95 % below 7.1 Hz; drift accumulates)
+WINDOW = 96                      # 480 ms at 200 Hz.  Was 48 (240 ms); the temporal model is the
+#                                 strong estimator here (it beats the true-k oracle), and under
+#                                 multi-axis saturation the spin *direction* is fixed in the body frame
+#                                 while only the magnitude is observable -- so a longer window is the
+#                                 principled way to average the direction out.  The GRU weights do not
+#                                 depend on the window length, so this is a layout-compatible change.
 COARSE = 17                      # causal 2 s summary: 5 aggregates + 3 per-axis sat fracs + 9 priors
 N_PRIOR = 9                      # r(3), g_T, G, T, range, tau, k
 N_CORR = 6                       # dr(3), dg_T, dG, dT

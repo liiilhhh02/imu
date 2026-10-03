@@ -74,6 +74,12 @@ CKPT_RL = {0: "shutdown_real_7", 3: "shutdown_real_7_4"}
 # distributional harness -- that is how the ">= 90 % of the truth-rate performance" comparison is run.
 RL_NAME = None
 RL_DIR = None
+# Tolerance probe: feed the TRUE rate plus a controlled perturbation.  This is not an estimator -- it
+# measures how good a rate source must be for this operating point, i.e. it converts "the network is
+# not good enough" into a number the next iteration can be judged against.
+PN_BIAS = 0.0
+PN_SIGMA = 0.0
+PN_RNG = np.random.default_rng(0)
 DT = 1.0 / 200.0
 POST_FAULT_S = 1.5       # open-loop logging appended after the fault for identification (seconds)
 #                          (this is where the gyro saturates, so the lever arm's |r_perp| becomes
@@ -309,6 +315,8 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
         u_cmd = np.clip((last_action + 1.0) * 7.5, 0.0, 15.0)   # the raw command we sent (N/rotor)
         if src == "truth":
             rate = w_true
+        elif src == "truth_noisy":
+            rate = w_true + PN_BIAS + PN_RNG.normal(0.0, PN_SIGMA, 3)
         elif src == "clipped":
             rate = gyro
         else:
@@ -345,7 +353,8 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
                 net_compat=getattr(net, "compat", None))
 
 
-SRCS = ("truth", "clipped", "net")
+SRCS = ["truth", "clipped", "net"]      # "truth_noisy" is appended when the tolerance
+                                        # probe is active (see PN_BIAS/PN_SIGMA in main)
 
 
 def summarize(rows):
@@ -373,11 +382,19 @@ def main():
     ap.add_argument("--rl_ckpt", default=None, help="override the inner-loop policy checkpoint name "
                                                    "(e.g. robust_v2_latest)")
     ap.add_argument("--rl_dir", default=None, help="directory that holds it")
+    ap.add_argument("--pn_bias", type=float, default=0.0,
+                    help="tolerance probe: constant bias added to the TRUE rate [rad/s]")
+    ap.add_argument("--pn_sigma", type=float, default=0.0,
+                    help="tolerance probe: white noise std added to the TRUE rate [rad/s]")
     ap.add_argument("--verbose", action="store_true", help="also print the per-draw final z of "
                                                            "every src (audit the escape rate)")
     a = ap.parse_args()
     global RL_NAME, RL_DIR
     RL_NAME, RL_DIR = a.rl_ckpt, a.rl_dir
+    global PN_BIAS, PN_SIGMA
+    PN_BIAS, PN_SIGMA = float(a.pn_bias), float(a.pn_sigma)
+    if PN_BIAS or PN_SIGMA:
+        SRCS.append("truth_noisy")
     print("=== E4 closed loop: w_hat drives BOTH the attitude INS and the controller rate input ===")
     print(f"ckpt={a.ckpt}  mask={MASK[a.flag]}  {a.seeds} fault draws x {a.steps} steps  "
           f"(each src re-flown from the same draw)\n")
