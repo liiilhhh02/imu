@@ -270,8 +270,9 @@ class NetRate:
     rolling 48-frame window, algebraic front end, actuator model from the identified priors; the
     simulator's true thrust is never used online)."""
 
-    def __init__(self, ckpt, dev, prior, dps, dt):
+    def __init__(self, ckpt, dev, prior, dps, dt, mode="net"):
         self.dev = dev
+        self.mode = mode          # "net" = trained residual on top of w_alg; "alg" = w_alg only
         self.dt = dt
         self.prior = np.asarray(prior, float)
         self.g_T = float(self.prior[3]); self.tau = float(self.prior[7]); self.k = float(self.prior[8])
@@ -313,6 +314,10 @@ class NetRate:
         tom_ = tom_from_command(u_, m_, self.dt, self.g_T, self.tau)
         w_alg = algebraic_estimate(g_, a_ - np.array([0.0, 0.0, 1.0]) * tom_[:, None],
                                    self.k, sat_, self.lim)
+        if self.mode == "alg":
+            # the analytic front end alone: separates "estimator pipeline" (priors, tom_from_command,
+            # INS-driven attitude) from "network" when a closed-loop divergence is being attributed
+            return w_alg[-1].astype(float)
         Na = len(self.buf["a"]); Hc = min(400, Na)
         repc = lambda x: np.concatenate([np.repeat(x[:1], 400 - Hc, 0), x], 0) if 400 - Hc else x
         cg = repc(np.stack(self.buf["g"][-Hc:])); cm = repc(np.stack(self.buf["m"][-Hc:]))
@@ -340,7 +345,7 @@ def main():
     pa.add_argument("--flag", type=int, default=0, choices=[0, 1, 2, 3])
     pa.add_argument("--dps", type=float, default=1000.0)
     pa.add_argument("--src", default="measured",
-                    choices=["truth", "measured", "clipped", "override", "net"])
+                    choices=["truth", "measured", "clipped", "override", "alg", "net"])
     pa.add_argument("--steps", type=int, default=2000)
     pa.add_argument("--dt", type=float, default=0.005)
     pa.add_argument("--mass", type=float, default=1.0)
@@ -394,15 +399,15 @@ def main():
     # the closed loop from the fault IC (which setup() has not applied yet) so every --src sees the
     # same draw (paired by --seed) ---
     ins, netr = None, None
-    if a.src == "net":
+    if a.src in ("net", "alg"):
         ckpt = a.ckpt or os.path.join(ME, "results", "e2e_v7.pt")
         if not os.path.exists(ckpt):
             ckpt = os.path.join(ME, "results", "e2e_v8.pt")
         prior, _diag = n.identify(imu, lag)          # applies the fault IC internally
         n.apply_ic()                                 # same post-fault state for every src
         ins = AttitudeINS(quat_to_matrix(n.state[1]))
-        netr = NetRate(ckpt, torch.device("cpu"), prior, a.dps, a.dt)
-        print(f"[gz] src=net ckpt={os.path.basename(ckpt)} compatible={netr.compat}")
+        netr = NetRate(ckpt, torch.device("cpu"), prior, a.dps, a.dt, mode=a.src)
+        print(f"[gz] src={a.src} ckpt={os.path.basename(ckpt)} compatible={netr.compat}")
     else:
         n.apply_ic()
 
@@ -429,7 +434,7 @@ def main():
             rate = omega
         elif a.src in ("measured", "clipped"):
             rate = gyro
-        elif a.src == "net":
+        elif a.src in ("net", "alg"):
             rate = netr.step(accel, gyro, u_cmd, mask)
         else:
             if i < a.calib_steps:

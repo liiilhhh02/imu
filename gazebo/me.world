@@ -2,14 +2,19 @@
 <sdf version="1.6">
   <world name="default">
     <!-- no ground plane: matches the pybullet MetaShutDown7 env (plane.urdf is not loaded) -->
-    <physics type="ode">
+<physics type="ode">
       <max_step_size>0.001</max_step_size>
-      <real_time_update_rate>1000</real_time_update_rate>
+      <!-- real_time_update_rate: 1000 = real-time wall pacing.  The net/alg rows of gz_runner.py need
+           it *slowed* (200) because their estimator step costs ~18 ms of wall clock: at real-time wall
+           pacing the loop cannot keep up and the control interval stretches in simulated time (measured
+           loop=140 Hz with |w| still correct), which would make the closed-loop comparison unfair.
+           truth/clipped keep up in either world.  Restore 1000 for real-time runs. -->
+      <real_time_update_rate>200</real_time_update_rate>
     </physics>
     <!-- gazebo_ros_state is a *WorldPlugin* -> must be declared here.
          libgazebo_ros_init / _factory / _force_system are *SystemPlugins* -> passed with -s on the
          gzserver command line (declaring them here yields "incorrect plugin type").
-         update_rate MUST equal the physics rate (1/max_step_size = 200 Hz): gz_runner syncs its
+         update_rate MUST equal the physics rate (1/max_step_size = 1000 Hz): gz_runner syncs its
          control loop to one /model_states message per physics step, so a lower rate would slow the
          control loop (and with it the whole controller) below its 200 Hz design point. -->
     <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">

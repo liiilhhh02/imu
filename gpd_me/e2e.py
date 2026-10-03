@@ -31,9 +31,13 @@ WINDOW = 48                      # 240 ms at 200 Hz (the rate is 95 % below 7.1 
 COARSE = 17                      # causal 2 s summary: 5 aggregates + 3 per-axis sat fracs + 9 priors
 N_PRIOR = 9                      # r(3), g_T, G, T, range, tau, k
 N_CORR = 6                       # dr(3), dg_T, dG, dT
-FINE_FEATURES = 3 + 1 + 3 + 3 + 4 + 1 + N_PRIOR + 1 + 3      # 28
+FINE_FEATURES = 3 + 1 + 3 + 3 + 4 + 1 + N_PRIOR + 1 + 3 + 1      # 29
 # feature layout: s(0:3) | |s|(3) | gyro(4:7) | sat(7:10) | u(10:14) | T/M(14) | priors(15:24)
-#                 | |gyro|(24) | w_alg(25:28)
+#                 | |gyro|(24) | w_alg(25:28) | w_z_model(28)
+# The last column is the *yaw* channel's own physics: the identified ARX `T*dwz/dt + wz = G*sum(+-u)`
+# predicts w_z from the command alone, i.e. an independent estimate of the axis that saturates most
+# often -- a one-step-ahead model prediction, available on a real vehicle, appended last so every
+# existing slice (GYRO_SLICE, the prior block) keeps its index.
 # `s` and `T/M` are built from the *command* (identified g_T + identified actuator lag), never from
 # the simulator's true thrust; `k = |r_perp|` (prior[8]) is the lever scale the algebra needs.
 GYRO_SLICE = slice(4, 7)        # <- the only correct way to read the measured rate back out
@@ -150,10 +154,22 @@ def fine_features(accel, gyro, sat, u_cmd, tom_hat, prior, w_alg):
     """
     s = accel - np.array([0.0, 0.0, 1.0])[None, :] * tom_hat[:, None]
     H = len(accel)
+    # yaw-model feature: the identified ARX's *equilibrium* yaw rate for the commanded differential,
+    # `w_z_ss = G * sum(+-u)`.  Deliberately dt-free (a one-step prediction would need the per-window dt
+    # threaded into this function) and deliberately an equilibrium: the identified time constant is
+    # ~2.6 s, so this is a slow, independent estimate of the axis that saturates most often -- the
+    # network decides how far to trust it.  Falls back to the clipped gyro when G was not identified.
+    pri = np.asarray(prior, float)
+    G_p = float(pri[4])
+    if np.isfinite(G_p) and G_p > 0:
+        yaw_cmd = (u_cmd * np.array([1.0, -1.0, 1.0, -1.0])[None, :]).sum(axis=1)
+        wz_m = G_p * yaw_cmd
+    else:
+        wz_m = np.asarray(gyro, float)[:, 2]
     return np.concatenate([
         s, np.linalg.norm(s, axis=1)[:, None], gyro, sat.astype(float), u_cmd, tom_hat[:, None],
         np.tile(np.asarray(prior, float)[None, :], (H, 1)),
-        np.linalg.norm(gyro, axis=1)[:, None], w_alg,
+        np.linalg.norm(gyro, axis=1)[:, None], w_alg, wz_m[:, None],
     ], axis=1).astype(np.float32)
 
 
