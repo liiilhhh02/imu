@@ -1,0 +1,14 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="default">
+    <!-- no ground plane: matches the pybullet MetaShutDown7 env (plane.urdf is not loaded) -->
+    <physics type="ode">
+      <max_step_size>0.005</max_step_size>
+      <real_time_update_rate>200</real_time_update_rate>
+    </physics>
+    <!-- gazebo_ros_state is a *WorldPlugin* -> must be declared here.
+         libgazebo_ros_init / _factory / _force_system are *SystemPlugins* -> passed with -s on the
+         gzserver command line (declaring them here yields "incorrect plugin type"). -->
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so"/>
+  </world>
+</sdf>

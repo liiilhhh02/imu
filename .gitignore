@@ -1,0 +1,17 @@
+# datasets (regenerable in ~10 min with the command in docs/DATA.md; ~570 MB each)
+results/dr_*/
+results/*.npz
+results/*.npy
+# run logs / transient output
+results/*.log
+results/*.nohup
+results/review_*.txt
+# python
+__pycache__/
+*.pyc
+.venv*/
+# the supervisor's code is NOT redistributed here (see reference/README.md)
+reference/senior/
+# editor / os
+.vscode/
+.DS_Store

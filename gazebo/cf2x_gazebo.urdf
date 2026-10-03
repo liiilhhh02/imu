@@ -1,0 +1,40 @@
+<?xml version="1.0" ?>
+<!-- Minimal single-body version of the senior's cf2x.urdf for Gazebo Classic.
+     The four prop links are not needed: the controller applies one equivalent wrench
+     (total thrust along body z + the rotor-offset torques + the yaw reaction torque) at the CoM.
+
+     Mass/inertia match MetaShutDown7.reset(): M=1.0, J=diag(0.004,0.004,0.007).
+
+     The wrench arrives on the topic /cf2/cmd_wrench (geometry_msgs/Wrench). `force_frame=link`
+     means the wrench is expressed in the body frame and applied at the CoM, which is exactly the
+     convention the controller uses. A topic (not the /apply_link_wrench service) is used because
+     the service round-trip capped the control loop at ~44 Hz. -->
+<robot name="cf2">
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.004" ixy="0.0" ixz="0.0" iyy="0.004" iyz="0.0" izz="0.007"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.12 0.12 0.02"/></geometry>
+      <material name="grey"><color rgba="0.4 0.4 0.4 1.0"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.12 0.12 0.02"/></geometry>
+    </collision>
+  </link>
+
+  <gazebo>
+    <plugin name="force_cmd" filename="libgazebo_ros_force.so">
+      <ros>
+        <namespace>/cf2</namespace>
+        <remapping>gazebo_ros_force:=cmd_wrench</remapping>
+      </ros>
+      <link_name>base_link</link_name>
+      <force_frame>link</force_frame>
+    </plugin>
+  </gazebo>
+</robot>

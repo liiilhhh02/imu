@@ -1,0 +1,17 @@
+# verified working set (venv at ../../gym-pybullet-drones/.venv-repro, Python 3.10.12)
+#
+# The simulation needs pybullet; the estimator needs torch.  The CUDA wheel is only needed for
+# training -- install the CPU wheel instead if you just want to run the verification scripts:
+#   pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+#
+numpy==1.26.4
+scipy==1.15.3
+matplotlib==3.10.9
+pillow==12.3.0
+tqdm==4.70.1
+pybullet==3.2.7
+gym==0.26.2
+cloudpickle==3.1.2
+# pkg_resources is imported by the supervisor's BaseAviary: setuptools>=81 removed it
+setuptools<81
+torch==2.6.0

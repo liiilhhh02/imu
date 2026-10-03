@@ -1,0 +1,24 @@
+pybullet build time: Jan 29 2025 23:16:28
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/home/liiil/Downloads/gym-pybullet-drones/gym_pybullet_drones/control/BaseControl.py:4: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  import pkg_resources
+=== E4 closed loop: w_hat drives BOTH the attitude INS and the controller rate input ===
+ckpt=results/e2e_v5.pt  mask=[0, 0, 1, 1]  3 seeds x 2000 steps
+
+   dps src            z    std      xy   bias  jitter    tilt   k_hat  verdict
+/home/liiil/Downloads/gym-pybullet-drones/.venv-repro/lib/python3.10/site-packages/gym/spaces/box.py:127: UserWarning: [33mWARN: Box bound precision lowered by casting to float32[0m
+  logger.warn(f"Box bound precision lowered by casting to {self.dtype}")
+/home/liiil/Downloads/gym-pybullet-drones/.venv-repro/lib/python3.10/site-packages/gym/spaces/box.py:127: UserWarning: [33mWARN: Box bound precision lowered by casting to float32[0m
+  logger.warn(f"Box bound precision lowered by casting to {self.dtype}")
+   400 truth     -27.78   6.55   2.366   0.02    1.86     5.3   2.67cm  LOST
+   400 clipped   -63.72   8.01  57.827  36.61   90.87    78.4   2.67cm  LOST
+   400 net       -98.08  14.31  43.081   7.20   17.22    87.0   2.67cm  LOST
+   700 truth     -27.78   6.55   2.366   0.02    1.86     5.3   2.67cm  LOST
+   700 clipped   -79.80   9.58  58.648  34.20   87.52    81.3   2.67cm  LOST
+   700 net       -94.44  11.97  63.476   6.14   15.40    83.8   2.67cm  LOST
+  1000 truth     -27.78   6.55   2.366   0.02    1.86     5.3   2.67cm  LOST
+  1000 clipped   -49.26   8.69  59.580  17.54   37.22    88.0   2.67cm  LOST
+  1000 net       -73.19  12.78  65.299   4.41   12.07    89.9   2.67cm  LOST
