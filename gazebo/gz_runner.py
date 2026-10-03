@@ -47,7 +47,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 URDF = os.path.join(HERE, "cf2x_gazebo.urdf")
 MODEL, LINK = "cf2", "cf2::base_link"
 SHUT_DOWN = {0: [0, 1, 1, 1], 1: [0, 1, 0, 1], 2: [0, 0, 0, 1], 3: [0, 0, 1, 1]}
-CKPT = {0: "shutdown_real_7", 2: "shutdown_real_7_4"}
+CKPT = {0: "shutdown_real_7", 1: "shutdown_real_7",
+        2: "shutdown_real_7_4", 3: "shutdown_real_7_4"}
 LEVER_ARM = (-0.012, -0.0055, 0.0)
 
 
@@ -56,6 +57,7 @@ class Runner(Node):
         super().__init__("gz_shutdown_ctrl")
         self.a = a
         self.state = None
+        self.states_received = 0
         self.sim_t = None
         self.create_subscription(ModelStates, "/model_states", self._on_states, 10)
         self.create_subscription(Clock, "/clock", self._on_clock,
@@ -73,6 +75,7 @@ class Runner(Node):
                           np.array([p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]),
                           np.array([t.linear.x, t.linear.y, t.linear.z]),
                           np.array([t.angular.x, t.angular.y, t.angular.z]))
+            self.states_received += 1
 
     def _on_clock(self, m):
         self.sim_t = m.clock.sec + m.clock.nanosec * 1e-9
@@ -89,20 +92,30 @@ class Runner(Node):
         d = DeleteEntity.Request(); d.name = MODEL
         self._call(self.del_cli, d)
         time.sleep(0.4)
+        # drop any state cached from the previous model: only messages that arrive *after*
+        # the spawn count as fresh, otherwise the control loop starts on a stale (already
+        # fallen) pose and wastes the whole run chasing it.
+        self.state = None
+        self.states_received = 0
         r = SpawnEntity.Request(); r.name = MODEL; r.xml = open(URDF).read()
         r.initial_pose = Pose(); r.initial_pose.position.z = 1.0
         out = self._call(self.spawn_cli, r)
         print(f"[gz] spawn success={out.success if out else None}")
         t0 = time.time()
-        while self.state is None and time.time() - t0 < 8:
-            time.sleep(0.05)
+        while self.states_received == 0 and time.time() - t0 < 8:
+            time.sleep(0.01)
         if self.a.spin_init > 0:
-            st = EntityState(); st.name = MODEL
-            st.pose = Pose(); st.pose.position.z = 1.0; st.pose.orientation.w = 1.0
-            st.twist = Twist(); st.twist.angular.z = -float(self.a.spin_init)
-            out = self._call(self.set_cli, SetEntityState.Request(state=st))
-            print(f"[gz] initial spin {-self.a.spin_init:.1f} rad/s  set={out.success if out else None}")
-            time.sleep(0.2)
+            omega0 = np.array([0.0, 0.0, -float(self.a.spin_init)])
+        else:
+            omega0 = fault_ic_spin(self.a.flag, np.random.default_rng(self.a.seed))
+        st = EntityState(); st.name = MODEL
+        st.pose = Pose(); st.pose.position.z = 1.0; st.pose.orientation.w = 1.0
+        st.twist = Twist()
+        st.twist.angular.x, st.twist.angular.y, st.twist.angular.z = [float(v) for v in omega0]
+        st.reference_frame = "world"
+        out = self._call(self.set_cli, SetEntityState.Request(state=st))
+        print(f"[gz] fault IC spin={np.round(omega0, 3)} rad/s  set={out.success if out else None}")
+        time.sleep(0.02)
 
     def apply(self, force, torque):
         """Publishes the body-frame wrench; the gazebo_ros_force plugin latches and applies it."""
@@ -111,6 +124,21 @@ class Runner(Node):
         w.torque.x, w.torque.y, w.torque.z = [float(v) for v in torque]
         self.wr_pub.publish(w)
         return True
+
+
+def fault_ic_spin(flag, rng):
+    """Initial angular velocity (world frame, = body frame at identity attitude) that
+    ``MetaShutDown7.shut_down_rotors(flag)`` sets with ``p.resetBaseVelocity``.
+
+    Flags 0/1 have no preset spin in the reference environment; flags 2/3 start with the
+    fault spin that makes the failure recoverable -- it is part of the scenario, not an
+    optional extra.
+    """
+    if flag == 2:
+        return np.array([rng.uniform(-3, 3), rng.uniform(-3, 3), -rng.uniform(20, 25)])
+    if flag == 3:
+        return np.array([rng.uniform(-3, 3), rng.uniform(-3, 3), -rng.uniform(24, 26)])
+    return np.zeros(3)
 
 
 def build_obs(rel_xy, rate, target_a, thrust_over_mass, last_action, mask):
@@ -135,19 +163,27 @@ def main():
     pa.add_argument("--target_pos", type=float, nargs=3, default=[0.0, 0.0, 1.0])
     pa.add_argument("--calib_steps", type=int, default=0)
     pa.add_argument("--tag", default="")
+    pa.add_argument("--dump", type=int, default=0, help="print first N control steps")
+    pa.add_argument("--sync", default="state", choices=["state", "wall"],
+                    help="state: one control step per physics step (paced by /model_states, whose "
+                         "update_rate must equal the physics rate); wall: wall-clock dt pacing")
+    pa.add_argument("--seed", type=int, default=None,
+                    help="RNG seed for the random fault initial spin (default: fresh entropy)")
     a = pa.parse_args()
 
     rclpy.init()
     n = Runner(a)
     ex = MultiThreadedExecutor(); ex.add_node(n)
     threading.Thread(target=ex.spin, daemon=True).start()
-    n.setup()
 
+    # Build the controller *before* spawning: loading a torch checkpoint takes ~1 s, and doing
+    # it after the spawn lets the drone free-fall for that whole second before the loop starts.
     policy = load_policy(CKPT[a.flag]) if a.flag in CKPT else None
     pid = PositionPID(); lag = ActuatorLag(a.delay)
     imu = IMU(IMUConfig(gyro_range_dps=a.dps, lever_arm=LEVER_ARM,
                         gyro_noise_std=0.05, accel_noise_std=0.02))
     obs_est = LeverArmObserver(gyro_limit_dps=a.dps) if a.src == "override" else None
+    n.setup()
     mask = np.array(SHUT_DOWN[a.flag], dtype=float)
     target_pos = np.array(a.target_pos, dtype=float)
     last_action = np.zeros(4)
@@ -155,7 +191,14 @@ def main():
 
     log = {k: [] for k in ("z", "xy", "wt", "wu", "rate")}
     t_wall = time.time()
+    n_seen = n.states_received
     for i in range(a.steps):
+        if a.sync == "state":
+            # sim-locked: one control step per physics step, paced by the state publisher
+            t0 = time.time()
+            while n.states_received == n_seen and time.time() - t0 < 2.0:
+                time.sleep(0.0001)
+            n_seen = n.states_received
         pos, quat, vel, omega_w = n.state
         R = quat_to_matrix(quat)
         omega = R.T @ omega_w
@@ -195,11 +238,16 @@ def main():
         if not n.apply(force, torque):
             print("[gz] wrench apply failed")
         last_action = action.copy()
+        if a.dump and (i < a.dump or i % 50 == 0):
+            print(f"  i={i:4d} sim={n.sim_t:.4f} wall={time.time()-t_wall:6.3f} "
+                  f"z={pos[2]:9.4f} om={np.round(omega, 3)} "
+                  f"ta={target_a:6.3f} act={np.round(action, 3)} th={np.round(thrust, 3)} "
+                  f"F={np.round(force, 3)} T={np.round(torque, 4)}")
 
         log["z"].append(float(pos[2])); log["xy"].append(float(np.hypot(pos[0], pos[1])))
         log["wt"].append(omega.copy()); log["wu"].append(np.asarray(rate).copy())
         sleep = a.dt - (time.time() - t_wall - i * a.dt)
-        if sleep > 0:
+        if a.sync == "wall" and sleep > 0:
             time.sleep(sleep)
     elapsed = time.time() - t_wall
 

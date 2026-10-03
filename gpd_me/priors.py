@@ -332,11 +332,27 @@ def id_lever_arm(gyro, accel, tom, dt, lim, mask_t=None, post_win=400, pre_win=2
     # wdot x r dominates) biases it.
     t0 = (t_f if t_f is not None else 0) + (int(0.3 / dt) if t_f is not None else 0)
     seg = slice(max(0, t0 - int(pre_win)), min(len(gyro), t0 + int(post_win)))
+
+    # ---- 1) in-range LS **first**: it also identifies the accelerometer bias, which the scan's model
+    #         lacks and which biases `k` most where the lever signal is weakest (low rates)
+    r_ls = None
+    b_acc = np.zeros(3)
+    if n_any >= 8:
+        try:
+            r_ls = ob.identify_lever_arm(gyro, accel, tom, dt, use_tangential=True, smooth=5,
+                                         fit_bias=False)   # see observer: bias fit tried, rejected
+            b_acc = np.asarray(getattr(ob, "accel_bias", np.zeros(3)), float)
+            how.append(f"inrange(n={n_any},strong={n_strong},|b|={np.linalg.norm(b_acc):.2f})")
+        except Exception:
+            r_ls = None
+    accel_c = accel - b_acc                 # bias-corrected for everything downstream
+
+    # ---- 2) the 1-D scale scan on the post-fault window, using the bias-corrected residual
     k_scan = float("nan")
     r_scan = None
     if sat[seg].any():
         try:
-            k_scan = float(ob.calibrate_scan(gyro[seg], accel[seg], tom[seg]))
+            k_scan = float(ob.calibrate_scan(gyro[seg], accel_c[seg], tom[seg]))
             if not getattr(ob, "scale_identified", False):
                 # collapsed scale (cost flat under a 2x change): the fitted r absorbed the scale, so
                 # neither k nor r is trustworthy -> declare the scale unknown instead of shipping a
@@ -348,36 +364,37 @@ def id_lever_arm(gyro, accel, tom, dt, lim, mask_t=None, post_win=400, pre_win=2
                 how.append(f"scan(n_sat={int(sat[seg].any(axis=1).sum())},flat={ob.k_flat:.1f})")
         except Exception:
             k_scan = float("nan")
-    # independent cross-check of the scale: the in-range samples give k = |s|/|w|^2 directly, but only
-    # when they carry a real rate (at 100-300 dps the whole range is below the signal floor)
+
+    # ---- 3) independent cross-check of the scale: the in-range samples give k = |s|/|w|^2 directly,
+    #         but only when they carry a real rate (at 100-300 dps the whole range is below the floor)
     if np.isfinite(k_scan) and n_strong >= 20 and n_any >= 8:
         try:
-            k_in = float(ob.calibrate_inrange(gyro, accel, tom))
+            k_in = float(ob.calibrate_inrange(gyro, accel_c, tom))
             if np.isfinite(k_in) and k_in > 0 and not (1 / 3.0 <= k_scan / k_in <= 3.0):
                 how.append(f"k_inrange_override({k_scan*1e2:.3f}->{k_in*1e2:.3f}cm)")
                 k_scan = k_in
         except Exception:
             pass
-    r_ls = None
-    need_ls = (n_strong >= 20) or (r_scan is None)
-    if need_ls and n_any >= 8:
-        try:
-            r_ls = ob.identify_lever_arm(gyro, accel, tom, dt, use_tangential=True, smooth=5)
-            how.append(f"inrange(n={n_any},strong={n_strong})")
-        except Exception:
-            r_ls = None
-    if r_ls is not None:
+
+    # ---- 4) route choice by *information content*, not availability: the scan uses the steady
+    #         high-rate saturated samples (excellent SNR), the in-range LS the spin-up transient and is
+    #         only trustworthy when those samples carry a real rate.  At 100-300 dps they never do.
+    if r_ls is not None and (n_strong >= 20 or r_scan is None):
         r = r_ls
     elif r_scan is not None:
         r = r_scan
+    elif r_ls is not None:
+        r = r_ls
     else:
         return np.zeros(3), float("nan"), "fail"
     r = np.asarray(r, float)
+
+    # ---- 5) the scale the front end will use
     if np.isfinite(k_scan):
-        d = _dominant_dir(ob, gyro[seg], accel[seg], tom[seg], k_scan)
+        d = _dominant_dir(ob, gyro[seg], accel_c[seg], tom[seg], k_scan)
         k = float(np.linalg.norm(r - (r @ d) * d)) if d is not None else k_scan
     elif sat[seg].any():
-        # The scan is *scale-degenerate* whenever the spin axis direction is pinned by the measured
+        # The scan is *scale-degenerate* whenever the spin-axis direction is pinned by the measured
         # axes alone (one saturated axis, or several distributed by their clipped ratio): then
         # `|s_i| = |w_i|^2 |r_perp|` with `|w_i|^2 = |s_i|/k` is a tautology and any k fits equally
         # well -- measured cost(2k)/cost(k) = 1.00-1.33 for a collapse versus 2.0-2.1 when the

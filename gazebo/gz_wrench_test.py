@@ -40,7 +40,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from gazebo_msgs.srv import (ApplyLinkWrench, DeleteEntity, GetEntityState, LinkRequest,
                              SetEntityState, SpawnEntity)
 from gazebo_msgs.msg import EntityState, ModelStates
-from geometry_msgs.msg import Pose, Quaternion, Twist, Vector3, Wrench
+from geometry_msgs.msg import Point, Pose, Quaternion, Twist, Vector3, Wrench
 from rosgraph_msgs.msg import Clock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -79,6 +79,7 @@ class H(Node):
         super().__init__("gz_wrench_test")
         self.sim_t = None
         self.steps = 0
+        self.mstate = None
         self.create_subscription(ModelStates, "/model_states", self._on_states, 10)
         self.create_subscription(
             Clock, "/clock", self._on_clock,
@@ -92,7 +93,14 @@ class H(Node):
         self.pub = self.create_publisher(Wrench, "/cf2/cmd_wrench", 1)
 
     def _on_states(self, m):
-        pass
+        if MODEL in m.name:
+            i = m.name.index(MODEL)
+            p, t = m.pose[i], m.twist[i]
+            self.mstate = (
+                np.array([p.position.x, p.position.y, p.position.z]),
+                np.array([p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w]),
+                np.array([t.linear.x, t.linear.y, t.linear.z]),
+                np.array([t.angular.x, t.angular.y, t.angular.z]))
 
     def _on_clock(self, m):
         self.sim_t = m.clock.sec + m.clock.nanosec * 1e-9
@@ -127,7 +135,7 @@ class H(Node):
         self.zero_wrench()
         st = EntityState(); st.name = MODEL
         st.pose = Pose()
-        st.pose.position = Vector3(x=0.0, y=0.0, z=float(z))
+        st.pose.position = Point(x=0.0, y=0.0, z=float(z))
         st.pose.orientation = Quaternion(x=quat[0], y=quat[1], z=quat[2], w=quat[3])
         st.twist = Twist()
         st.twist.angular = Vector3(x=ang[0], y=ang[1], z=ang[2])
@@ -138,17 +146,19 @@ class H(Node):
         return out.success if out else None
 
     def get(self):
-        """Returns (pos, quat, lin, ang) in the world frame via /get_entity_state."""
+        """Returns (pos, quat, lin, ang, sim_stamp) in the world frame via /get_entity_state."""
         req = GetEntityState.Request(); req.name = LINK; req.reference_frame = "world"
         out = self.call(self.get_cli, req)
         if out is None or not out.success:
             raise RuntimeError("get_entity_state failed")
         s = out.state
+        stamp = out.header.stamp.sec + out.header.stamp.nanosec * 1e-9
         return (np.array([s.pose.position.x, s.pose.position.y, s.pose.position.z]),
                 np.array([s.pose.orientation.x, s.pose.orientation.y, s.pose.orientation.z,
                           s.pose.orientation.w]),
                 np.array([s.twist.linear.x, s.twist.linear.y, s.twist.linear.z]),
-                np.array([s.twist.angular.x, s.twist.angular.y, s.twist.angular.z]))
+                np.array([s.twist.angular.x, s.twist.angular.y, s.twist.angular.z]),
+                stamp)
 
     def wait_sim(self, dur, wall_timeout=30.0):
         t0 = self.sim_t
@@ -172,19 +182,20 @@ class H(Node):
         t0 = self.sim_t
         steps0 = self.steps
         n = 0
+        w0 = time.time()
         if sync == "clock":
             next_t = t0
-            while self.sim_t - t0 < dur:
+            while self.sim_t - t0 < dur and time.time() - w0 < 30.0:
                 if self.sim_t >= next_t:
                     self.pub.publish(w); n += 1; next_t += CTRL_DT
                 time.sleep(0.0002)
         else:
-            w0 = time.time()
             while time.time() - w0 < dur:
                 self.pub.publish(w); n += 1
                 time.sleep(CTRL_DT)
+        t_stop = self.sim_t
         self.zero_wrench()
-        return n, self.steps - steps0, self.sim_t - t0
+        return n, self.steps - steps0, t_stop - t0
 
     def apply_service(self, force, torque, dur):
         req = ApplyLinkWrench.Request()
@@ -211,10 +222,11 @@ def test_freefall(n, args):
     p0 = n.get()
     n.wait_sim(args.dur)
     p1 = n.get()
+    dt = p1[4] - p0[4]
     z, vz = p1[0][2], p1[2][2]
-    z_th = 1.0 - 0.5 * G * args.dur ** 2
-    print(f"TEST freefall   T={args.dur:.2f}s: z={z:8.4f} (theory {z_th:8.4f})  "
-          f"vz={vz:8.4f} (theory {-G*args.dur:8.4f})  |w|={np.linalg.norm(p1[3]):.4f}")
+    z_th = p0[0][2] - 0.5 * G * dt ** 2
+    print(f"TEST freefall   dt={dt:.4f}s: z={z:9.4f} (theory {z_th:9.4f})  "
+          f"vz={vz:9.4f} (theory {-G*dt:9.4f})  |w|={np.linalg.norm(p1[3]):.4f}")
 
 
 def test_hover(n, args, service=False, sync="clock"):
@@ -222,13 +234,15 @@ def test_hover(n, args, service=False, sync="clock"):
     p0 = n.get()
     if service:
         ok = n.apply_service([0.0, 0.0, MASS * G], [0.0, 0.0, 0.0], args.dur)
+        p1 = n.get()
+        dt = p1[4] - p0[4]
     else:
-        ok = n.apply_topic([0.0, 0.0, MASS * G], [0.0, 0.0, 0.0], args.dur, sync=sync)[0]
-    p1 = n.get()
+        _, _, dt = n.apply_topic([0.0, 0.0, MASS * G], [0.0, 0.0, 0.0], args.dur, sync=sync)
+        p1 = n.get()
     dz, vz = p1[0][2] - p0[0][2], p1[2][2]
     tag = "service" if service else f"topic/{sync}"
-    print(f"TEST hover[{tag:11s}] T={args.dur:.2f}s: dz={dz:+8.4f} (theory +0.0000)  "
-          f"vz={vz:+8.4f} (theory +0.0000)  |w|={np.linalg.norm(p1[3]):.4f}")
+    print(f"TEST hover[{tag:11s}] dt={dt:.4f}s: dz={dz:+9.4f} (theory +0.0000)  "
+          f"vz={vz:+9.4f} (theory +0.0000)  |w|={np.linalg.norm(p1[3]):.4f}")
 
 
 def test_tilt(n, args):
@@ -237,30 +251,30 @@ def test_tilt(n, args):
     q = (math.sin(th / 2), 0.0, 0.0, math.cos(th / 2))
     n.reset(z=1.0, quat=q)
     p0 = n.get()
-    n.apply_topic([0.0, 0.0, MASS * G], [0.0, 0.0, 0.0], args.dur)
+    _, _, dt = n.apply_topic([0.0, 0.0, MASS * G], [0.0, 0.0, 0.0], args.dur)
     p1 = n.get()
     R = quat_to_matrix(q)
     v_body = R.T @ p1[2]
-    # thrust along body z (=world x after +90deg roll) for T seconds
-    print(f"TEST tilt(roll90) T={args.dur:.2f}s: dv_world={np.round(p1[2]-p0[2], 4)} "
-          f"(theory link-frame {np.round(R @ np.array([0.0, 0.0, G*args.dur]), 4)}) "
+    print(f"TEST tilt(roll90) dt={dt:.4f}s: dv_world={np.round(p1[2]-p0[2], 4)} "
+          f"(theory link-frame {np.round(R @ np.array([0.0, 0.0, G*dt]), 4)}) "
           f"v_body={np.round(v_body, 4)}")
 
 
 def test_rotor(n, args):
     """Single-rotor wrench (mixer mapping) -> measured alpha vs tau/I."""
     t = args.force_n
+    dur = min(args.dur, 0.05)
     force, torque = mixer_body_wrench([t, 0.0, 0.0, 0.0])
     alpha_th = torque / J
     n.reset(z=1.0)
     n.wait_sim(0.2)                     # settle: no wrench yet
     p0 = n.get()
     w0 = body_rate(p0[1], p0[3])
-    n.apply_topic(force, torque, args.dur)
+    _, _, dt = n.apply_topic(force, torque, dur)
     p1 = n.get()
     w1 = body_rate(p1[1], p1[3])
-    alpha = (w1 - w0) / args.dur
-    print(f"TEST rotor0 t={t:.2f}N T={args.dur:.2f}s: force={np.round(force, 4)} "
+    alpha = (w1 - w0) / dt
+    print(f"TEST rotor0 t={t:.2f}N dt={dt:.4f}s: force={np.round(force, 4)} "
           f"torque={np.round(torque, 4)}")
     print(f"     alpha_meas={np.round(alpha, 3)} rad/s^2   alpha_theory(tau/I)="
           f"{np.round(alpha_th, 3)}   ratio={np.round(alpha / alpha_th, 3)}")
@@ -272,12 +286,12 @@ def test_torque(n, args, axis):
     n.wait_sim(0.2)
     p0 = n.get()
     w0 = body_rate(p0[1], p0[3])
-    n.apply_topic([0.0, 0.0, 0.0], tau, args.dur)
+    _, _, dt = n.apply_topic([0.0, 0.0, 0.0], tau, args.dur)
     p1 = n.get()
     w1 = body_rate(p1[1], p1[3])
-    alpha = (w1 - w0) / args.dur
+    alpha = (w1 - w0) / dt
     th = tau / J
-    print(f"TEST torque{['x','y','z'][axis]} tau={tau[axis]:.4f} N.m T={args.dur:.2f}s: "
+    print(f"TEST torque{['x','y','z'][axis]} tau={tau[axis]:.4f} N.m dt={dt:.4f}s: "
           f"alpha_meas={np.round(alpha, 4)}  alpha_theory={np.round(th, 4)}  "
           f"ratio={np.round(alpha / th, 4)}")
 
@@ -285,20 +299,79 @@ def test_torque(n, args, axis):
 def test_latch(n, args):
     """Publish ONE wrench; a latched plugin keeps applying it every physics step."""
     n.reset(z=1.0)
-    n.apply_topic([0.0, 0.0, MASS * G], [0.0, 0.0, 0.0], 0.01)
-    # (apply_topic zeroes the wrench at the end, so re-publish exactly one message)
+    n.zero_wrench()
     w = Wrench(); w.force = Vector3(x=0.0, y=0.0, z=MASS * G)
     n.pub.publish(w)
+    time.sleep(0.05)                    # let the message arrive
     p0 = n.get()
     n.wait_sim(1.0)
     p1 = n.get()
-    print(f"TEST latch(1 msg, 1.0s): dz={p1[0][2]-p0[0][2]:+8.4f} (hover theory +0.0000)  "
-          f"vz={p1[2][2]:+8.4f}  -> latched={'YES' if abs(p1[2][2]) < 0.5 else 'NO'}")
+    dt = p1[4] - p0[4]
+    print(f"TEST latch(1 msg, dt={dt:.3f}s): dz={p1[0][2]-p0[0][2]:+9.4f} "
+          f"(hover theory +0.0000)  vz={p1[2][2]:+9.4f}  "
+          f"-> latched={'YES' if abs(p1[2][2]) < 0.5 else 'NO'}")
+    n.zero_wrench()
+
+
+def test_trace(n, args):
+    """Time series of a constant hover wrench: reveals force duty-cycle / sync issues."""
+    n.reset(z=1.0)
+    n.wait_sim(0.05)
+    force = [0.0, 0.0, MASS * G]
+    w = Wrench(); w.force = Vector3(x=0.0, y=0.0, z=float(force[2]))
+    t0 = n.sim_t
+    next_t = t0
+    next_sample = t0
+    npub = 0
+    rows = []
+    print(f"TEST trace force={force} dur={args.dur}s")
+    print(f"     {'sim_t':>9} {'stamp':>9} {'n_pub':>6} {'z':>10} {'vz':>10} {'|w|':>8}")
+    while n.sim_t - t0 < args.dur:
+        if n.sim_t >= next_t:
+            n.pub.publish(w); npub += 1; next_t += CTRL_DT
+        if n.sim_t >= next_sample:
+            s = n.get()
+            rows.append((n.sim_t, s[4], npub, s[0][2], s[2][2], np.linalg.norm(s[3])))
+            next_sample += 0.05
+        time.sleep(0.0005)
+    n.zero_wrench()
+    for r in rows[::max(1, len(rows) // 15)]:
+        print(f"     {r[0]:9.3f} {r[1]:9.3f} {r[2]:6d} {r[3]:10.4f} {r[4]:10.4f} {r[5]:8.4f}")
+    if rows:
+        print(f"     last: z={rows[-1][3]:.4f} vz={rows[-1][4]:.4f} rows={len(rows)} "
+              f"sim_dt={rows[-1][0]-rows[0][0]:.4f} stamp_dt={rows[-1][1]-rows[0][1]:.4f}")
+
+
+def test_statecmp(n, args):
+    """Compare /model_states (what gz_runner reads) with /get_entity_state (world frame)."""
+    tau = np.array([0.05, -0.03, 0.02])
+    n.reset(z=1.0)
+    n.wait_sim(0.2)
+    s_geo = n.get()
+    s_mod = n.mstate
+    print("TEST statecmp (at rest)")
+    print(f"  get_entity_state: pos={np.round(s_geo[0], 5)} quat={np.round(s_geo[1], 5)} "
+          f"lin={np.round(s_geo[2], 5)} ang={np.round(s_geo[3], 5)}")
+    print(f"  /model_states   : pos={np.round(s_mod[0], 5)} quat={np.round(s_mod[1], 5)} "
+          f"lin={np.round(s_mod[2], 5)} ang={np.round(s_mod[3], 5)}")
+    _, _, dt = n.apply_topic([0.0, 0.0, 0.0], tau, 0.4)
+    n.wait_sim(0.05)      # settle so both sources see the same (constant) omega
+    s_geo = n.get()
+    s_mod = n.mstate
+    print(f"TEST statecmp (after tau={tau} for {dt:.3f}s, omega constant)")
+    print(f"  get_entity_state: ang_world={np.round(s_geo[3], 5)} "
+          f"ang_body={np.round(body_rate(s_geo[1], s_geo[3]), 5)}")
+    print(f"  /model_states   : ang_world={np.round(s_mod[3], 5)} "
+          f"ang_body={np.round(body_rate(s_mod[1], s_mod[3]), 5)}")
+    print(f"  quat diff={np.round(s_geo[1]-s_mod[1], 6)}  pos diff="
+          f"{np.round(s_geo[0]-s_mod[0], 6)}  lin diff={np.round(s_geo[2]-s_mod[2], 5)}")
 
 
 TESTS = {
     "freefall": test_freefall,
     "hover": test_hover,
+    "trace": test_trace,
+    "statecmp": test_statecmp,
     "tilt": test_tilt,
     "rotor": test_rotor,
     "torquex": lambda n, a: test_torque(n, a, 0),

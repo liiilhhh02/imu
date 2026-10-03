@@ -209,7 +209,7 @@ class LeverArmObserver:
 
     def identify_lever_arm(self, gyros, accels, thrusts, dt: float, ridge: float = 1e-10,
                            use_tangential: bool = True, weights=None, smooth: int = 5,
-                           margin: int = 2, n_min: int = 8) -> np.ndarray:
+                           margin: int = 2, n_min: int = 8, fit_bias: bool = False) -> np.ndarray:
         """Weighted LS of the full lever-arm vector over the contiguous in-range part of the log.
 
         Uses both lever-arm terms, so it stays accurate through the spin-up transient where the
@@ -247,8 +247,35 @@ class LeverArmObserver:
         wv = np.repeat(wv[:, None], 3, axis=1).reshape(-1)      # one weight per (row, axis) entry
         if len(wv) != len(A):
             wv = np.ones(len(A))
-        Aw = A * wv[:, None]
-        r = np.linalg.solve(Aw.T @ A + ridge * np.eye(3), Aw.T @ b)
+        # Joint (r, b_acc) fit -- TRIED AND REJECTED, kept behind ``fit_bias`` for the record.
+        # The accelerometer bias is a constant offset the centripetal model lacks, and it matters most
+        # where the lever signal is weakest.  But in the nominal-phase geometry (a spin about body z)
+        # the lever term has no z component while `b_x, b_y` add a constant xy offset that trades
+        # directly against `|w|^2 r_xy`; with the |w|^2 range available at low ranges the split is
+        # poorly conditioned.  Measured on dr_1e7_v3 (120 shards): the full 6-parameter fit moved
+        # `k` from -25 % to -39 % and the high-range |r_perp| error from 1.4 mm to 15 mm -- i.e. worse.
+        # The z-only variant is at best neutral.  So the deployed identifier does NOT fit a bias, and
+        # the negative result is recorded in docs/STATUS.md.
+        if fit_bias and len(A) >= 4 * n_min:
+            # Only the bias component that is actually *identifiable* may be fitted.  For a spin about
+            # body z the lever term `M(w) r = |w|^2 (dd^T - I) r` has no z component, so:
+            #   * b_z is directly separable  -> include it;
+            #   * b_x, b_y are perfectly degenerate with r_x, r_y -> fitting them splits the lever
+            #     signal arbitrarily between the two (measured: the full 6-parameter fit made the
+            #     identified `k` WORSE, -39 % vs -25 %, and destroyed the high-range accuracy,
+            #     |r_perp| error 1.4 mm -> 15 mm).
+            Ab = np.concatenate([A, np.tile(np.eye(3)[2], (len(A) // 3, 1))], axis=1)   # (3n,1) z-rows
+            Aw = Ab * wv[:, None]
+            sol = np.linalg.solve(Aw.T @ Ab + ridge * np.eye(4), Aw.T @ b)
+            r, self.accel_bias = sol[:3], np.array([0.0, 0.0, sol[3]])
+            if not np.isfinite(self.accel_bias).all() or abs(self.accel_bias[2]) > 2.0:
+                Aw = A * wv[:, None]
+                r = np.linalg.solve(Aw.T @ A + ridge * np.eye(3), Aw.T @ b)
+                self.accel_bias = np.zeros(3)
+        else:
+            Aw = A * wv[:, None]
+            r = np.linalg.solve(Aw.T @ A + ridge * np.eye(3), Aw.T @ b)
+            self.accel_bias = np.zeros(3)
         self.lever_arm_est = r
         self.k = float(np.linalg.norm(r))
         self.n_inrange = int(keep.sum())
