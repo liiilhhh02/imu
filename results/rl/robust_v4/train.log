@@ -89,3 +89,7 @@
 [03:50:09] EVAL ep    80 lam=0.00: held 0/4  z_med -48.32  att_med 38.7
 [03:50:09] EVAL ep    80 lam=0.50: held 0/4  z_med -50.57  att_med 37.8
 [03:50:09] EVAL ep    80 lam=1.00: held 0/4  z_med -47.35  att_med 31.2
+[03:50:24] ep    81 lam<=0.52 rew=-150.24 att=286.1deg buf=1000000 ep/s= 0.05 eta=1:35:10
+[03:50:39] ep    82 lam<=0.52 rew=-151.17 att=301.9deg buf=1000000 ep/s= 0.05 eta=1:34:55
+[03:50:54] ep    83 lam<=0.52 rew=-113.01 att=282.2deg buf=1000000 ep/s= 0.05 eta=1:34:40
+[03:51:10] ep    84 lam<=0.52 rew=-110.43 att=279.7deg buf=1000000 ep/s= 0.05 eta=1:34:25
