@@ -37,9 +37,11 @@ import time
 
 import numpy as np
 import rclpy
+import torch
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from scipy.spatial.transform import Rotation
 
 from gazebo_msgs.msg import EntityState, ModelStates
 from gazebo_msgs.srv import DeleteEntity, SetEntityState, SpawnEntity
@@ -50,10 +52,13 @@ REPO = "/home/liiil/Downloads/gym-pybullet-drones"
 ME = "/home/liiil/Downloads/me"
 sys.path[:0] = [REPO, ME]
 
+from gpd_me.e2e import WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features  # noqa: E402
 from gpd_me.imu import IMU, IMUConfig              # noqa: E402
+from gpd_me.ins import AttitudeINS                 # noqa: E402
 from gpd_me.observer import LeverArmObserver       # noqa: E402
 from gpd_me.policy import (ActuatorLag, PositionPID, load_policy, mixer_body_wrench,  # noqa: E402
                            quat_to_matrix)
+from gpd_me.priors import identify_priors, tom_from_command  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 URDF = os.path.join(HERE, "cf2x_gazebo.urdf")
@@ -125,6 +130,11 @@ class Runner(Node):
         self.state_hz = (self.states_received - m0) / max(time.time() - w0, 1e-9)
         self.state = None
         self.states_received = 0
+
+    def apply_ic(self):
+        """(Re-)pose the drone at the fault IC: [0,0,1], identity attitude, zero linear velocity
+        and the preset spin of `MetaShutDown7.shut_down_rotors(flag)`."""
+        self.apply(np.zeros(3), np.zeros(3))
         if self.a.spin_init > 0:
             omega0 = np.array([0.0, 0.0, -float(self.a.spin_init)])
         else:
@@ -144,6 +154,89 @@ class Runner(Node):
         t0 = time.time()
         while self.states_received == 0 and time.time() - t0 < 2.0:
             time.sleep(0.001)
+
+    def step_paced(self):
+        """Wait one control step (``--substeps`` physics steps) and return the fresh state."""
+        t0 = time.time()
+        for _ in range(self.a.substeps):
+            seen = self.states_received
+            while self.states_received == seen and time.time() - t0 < 2.0:
+                time.sleep(0.0001)
+        return self.state
+
+    def send_u(self, u_cmd, mask, lag):
+        """Open-loop: per-rotor thrust command [N] -> thrust lag -> mixer -> /cf2/cmd_wrench."""
+        forces = np.clip(np.asarray(u_cmd, float), 0.0, 15.0) * np.asarray(mask, float)
+        thrust = lag.step(forces, self.a.dt)
+        omega = quat_to_matrix(self.state[1]).T @ self.state[3]
+        force, torque = mixer_body_wrench(thrust, self.a.km,
+                                          damping_torque=-self.a.kappa * omega)
+        self.apply(force, torque)
+        return thrust
+
+    def identify(self, imu, lag):
+        """The deployment procedure's first half, as `scripts/e4_closed_loop.identification`:
+        nominal hover + the two-stage open-loop yaw manoeuvre, then the fault and its open-loop
+        transient -> `identify_priors`.  Every logged quantity is measurable on the real aircraft
+        (the true thrust is a diagnostic only)."""
+        dt, mass = self.a.dt, self.a.mass
+        seed = self.a.seed if self.a.seed is not None else int.from_bytes(os.urandom(4), "little")
+        L = {k: [] for k in ("g", "a", "u", "w", "v", "t", "m")}
+        prev = [None]
+
+        def log_step(mask, om):
+            tom = float(lag.thrust.sum()) / mass
+            wdot = np.zeros(3) if prev[0] is None else (om - prev[0]) / dt
+            prev[0] = om.copy()
+            gyro, accel = imu.measure(om, wdot, tom, dt, force=True)
+            L["g"].append(gyro); L["a"].append(accel); L["v"].append(self.state[2].copy())
+            L["w"].append(om.copy()); L["t"].append(tom)
+            L["m"].append(np.asarray(mask, float).copy())
+
+        rng0 = np.random.default_rng(seed)
+        yid_f = float(rng0.uniform(0.3, 2.0)); yid_target = 0.30 * np.deg2rad(self.a.dps)
+        yid_d0 = float(rng0.uniform(0.3, 1.0)); yid_tA = int(0.2 / dt)
+        hover_u = mass * 9.81 / 4.0
+        yid_amp, yid_w0 = None, None
+        ones = np.ones(4)
+        for i in range(int(1.6 / dt)):
+            self.step_paced()
+            om = quat_to_matrix(self.state[1]).T @ self.state[3]
+            log_step(ones, om)
+            base = hover_u + 2.0 * (1.0 - float(self.state[0][2]))
+            if i == yid_tA:
+                yid_w0 = float(om[2])
+            if i < yid_tA:
+                exc = yid_d0
+            else:
+                if yid_amp is None:
+                    dtA = max(i - yid_tA, 1) * dt
+                    gain = abs(float(om[2]) - yid_w0) / max(abs(yid_d0) * dtA, 1e-6)
+                    yid_amp = float(np.clip(yid_target / max(gain, 1e-3), 0.05, 3.0))
+                exc = yid_amp * np.sin(2 * np.pi * yid_f * (i - yid_tA) * dt)
+            u = np.clip(np.array([base - exc, base + exc, base - exc, base + exc]), 0.0, 15.0)
+            L["u"].append(u)
+            self.send_u(u, ones, lag)
+        self.apply_ic()                       # the fault draw
+        mask = np.array(SHUT_DOWN[self.a.flag], float)
+        rng = np.random.default_rng(seed * 7919 + 13)
+        base = mass * 9.81 / max(float(mask.sum()), 1.0)
+        walk = rng.normal(0.0, 0.05, 4); freqs = rng.uniform(0.2, 8.0, 4)
+        phases = rng.uniform(0, 2 * np.pi, 4); amps = rng.uniform(0.0, 3.0, 4)
+        for i in range(int(float(self.a.id_post) / dt)):
+            self.step_paced()
+            om = quat_to_matrix(self.state[1]).T @ self.state[3]
+            log_step(mask, om)
+            walk = np.clip(walk * 0.995 + rng.normal(0.0, 0.05, 4), -1.5, 1.5)
+            u = np.clip(base + walk + amps * np.sin(2 * np.pi * freqs * i * dt + phases), 0.0, 15.0)
+            L["u"].append(u)
+            self.send_u(u, mask, lag)
+        d = {k: np.array(v) for k, v in L.items()}
+        self.apply(np.zeros(3), np.zeros(3))
+        prior, diag = identify_priors(d["g"], d["a"], d["u"], d["w"], d["m"], self.a.dps, dt,
+                                      vel=d["v"], tom=d["t"])
+        print(f"[gz] prior={np.round(np.asarray(prior, float), 5)}")
+        return prior, diag
 
     def apply(self, force, torque):
         """Publishes the body-frame wrench; the gazebo_ros_force plugin latches and applies it."""
@@ -169,6 +262,72 @@ def fault_ic_spin(flag, rng):
     return np.zeros(3)
 
 
+_WARNED = set()          # checkpoints already reported as incompatible (loud once, not per run)
+
+
+class NetRate:
+    """Causal wrapper around the trained end-to-end estimator (same as e4_closed_loop.NetRate:
+    rolling 48-frame window, algebraic front end, actuator model from the identified priors; the
+    simulator's true thrust is never used online)."""
+
+    def __init__(self, ckpt, dev, prior, dps, dt):
+        self.dev = dev
+        self.dt = dt
+        self.prior = np.asarray(prior, float)
+        self.g_T = float(self.prior[3]); self.tau = float(self.prior[7]); self.k = float(self.prior[8])
+        self.lim = np.deg2rad(dps)
+        ck = torch.load(ckpt, map_location=dev, weights_only=False)
+        ck_hidden, ck_layers = int(ck.get("hidden", 128)), int(ck.get("layers", 1))
+        self.net = E2ENet(hidden=ck_hidden, layers=ck_layers).to(dev).eval()
+        try:
+            self.net.load_state_dict(ck["state"])
+            self.compat = True
+            self.xf_m = torch.tensor(ck["xf_m"], device=dev, dtype=torch.float32)
+            self.xf_s = torch.tensor(ck["xf_s"], device=dev, dtype=torch.float32)
+            self.xp_m = torch.tensor(ck["xp_m"], device=dev, dtype=torch.float32)
+            self.xp_s = torch.tensor(ck["xp_s"], device=dev, dtype=torch.float32)
+        except RuntimeError as exc:
+            self.compat = False
+            msg = next((ln.strip() for ln in str(exc).splitlines() if "size mismatch" in ln),
+                       str(exc).splitlines()[0].strip())
+            if ckpt not in _WARNED:
+                _WARNED.add(ckpt)
+                print(f"[gz] WARNING: {ckpt} cannot be loaded ({msg}); the 'net' row falls back "
+                      f"to the algebraic estimate.")
+            F = fine_features(np.zeros((1, 3)), np.zeros((1, 3)), np.zeros((1, 3), bool),
+                              np.zeros((1, 4)), np.zeros(1), self.prior, np.zeros((1, 3))).shape[1]
+            self.xf_m = torch.zeros(F, device=dev); self.xf_s = torch.ones(F, device=dev)
+            self.xp_m = torch.zeros(len(self.prior), device=dev)
+            self.xp_s = torch.ones(len(self.prior), device=dev)
+        self.buf = {k: [] for k in ("a", "g", "u", "m")}
+
+    def step(self, accel, gyro, u_cmd, mask):
+        for key, val in (("a", accel), ("g", gyro), ("u", u_cmd), ("m", mask)):
+            self.buf[key].append(np.asarray(val, float))
+        H = min(WINDOW, len(self.buf["a"]))
+        pad = WINDOW - H
+        rep = lambda x: np.concatenate([np.repeat(x[:1], pad, 0), x], 0) if pad else x
+        a_ = rep(np.stack(self.buf["a"][-H:])); g_ = rep(np.stack(self.buf["g"][-H:]))
+        u_ = rep(np.stack(self.buf["u"][-H:])); m_ = rep(np.stack(self.buf["m"][-H:]))
+        sat_ = np.abs(g_) >= self.lim - 1e-9
+        tom_ = tom_from_command(u_, m_, self.dt, self.g_T, self.tau)
+        w_alg = algebraic_estimate(g_, a_ - np.array([0.0, 0.0, 1.0]) * tom_[:, None],
+                                   self.k, sat_, self.lim)
+        Na = len(self.buf["a"]); Hc = min(400, Na)
+        repc = lambda x: np.concatenate([np.repeat(x[:1], 400 - Hc, 0), x], 0) if 400 - Hc else x
+        cg = repc(np.stack(self.buf["g"][-Hc:])); cm = repc(np.stack(self.buf["m"][-Hc:]))
+        cu = repc(np.stack(self.buf["u"][-Hc:]))
+        ctom_ = tom_from_command(cu, cm, self.dt, self.g_T, self.tau)
+        cs = coarse_summary(cg, np.abs(cg) >= self.lim - 1e-9, cu, ctom_, self.prior)
+        T_ = lambda x: torch.tensor(np.asarray(x)[None], dtype=torch.float32, device=self.dev)
+        with torch.no_grad():
+            ft = ((T_(fine_features(a_, g_, sat_, u_, tom_, self.prior, w_alg)) - self.xf_m)
+                  / self.xf_s).clamp(-50, 50)
+            pt = (T_(self.prior) - self.xp_m) / self.xp_s
+            w_hat, _ = self.net(ft, T_(cs), pt, T_(w_alg), torch.tensor(sat_[None], device=self.dev))
+        return w_hat[0, -1].cpu().numpy().astype(float)
+
+
 def build_obs(rel_xy, rate, target_a, thrust_over_mass, last_action, mask):
     return np.array([rel_xy[0], rel_xy[1],
                      rate[0] / 10.0, rate[1] / 10.0, rate[2] / 50.0,
@@ -180,7 +339,8 @@ def main():
     pa = argparse.ArgumentParser()
     pa.add_argument("--flag", type=int, default=0, choices=[0, 1, 2, 3])
     pa.add_argument("--dps", type=float, default=1000.0)
-    pa.add_argument("--src", default="measured", choices=["truth", "measured", "override"])
+    pa.add_argument("--src", default="measured",
+                    choices=["truth", "measured", "clipped", "override", "net"])
     pa.add_argument("--steps", type=int, default=2000)
     pa.add_argument("--dt", type=float, default=0.005)
     pa.add_argument("--mass", type=float, default=1.0)
@@ -198,6 +358,10 @@ def main():
                          "update_rate must equal the physics rate); wall: wall-clock dt pacing")
     pa.add_argument("--seed", type=int, default=None,
                     help="RNG seed for the random fault initial spin (default: fresh entropy)")
+    pa.add_argument("--ckpt", default=None, help="trained e2e estimator checkpoint for --src net "
+                                                  "(default results/e2e_v7.pt, else e2e_v8.pt)")
+    pa.add_argument("--id_post", type=float, default=1.5,
+                    help="seconds of open-loop excitation logged after the fault for identification")
     pa.add_argument("--substeps", type=int, default=0,
                     help="physics steps per control step: act on every Nth /model_states message; "
                          "0 (default) auto-detects it from the measured state rate so the control "
@@ -226,7 +390,23 @@ def main():
     last_action = np.zeros(4)
     prev_omega, calib = None, {k: [] for k in ("g", "a", "t")}
 
-    log = {k: [] for k in ("z", "xy", "wt", "wu", "rate")}
+    # --- --src net: identify the priors from a nominal + post-fault open-loop flight, then start
+    # the closed loop from the fault IC (which setup() has not applied yet) so every --src sees the
+    # same draw (paired by --seed) ---
+    ins, netr = None, None
+    if a.src == "net":
+        ckpt = a.ckpt or os.path.join(ME, "results", "e2e_v7.pt")
+        if not os.path.exists(ckpt):
+            ckpt = os.path.join(ME, "results", "e2e_v8.pt")
+        prior, _diag = n.identify(imu, lag)          # applies the fault IC internally
+        n.apply_ic()                                 # same post-fault state for every src
+        ins = AttitudeINS(quat_to_matrix(n.state[1]))
+        netr = NetRate(ckpt, torch.device("cpu"), prior, a.dps, a.dt)
+        print(f"[gz] src=net ckpt={os.path.basename(ckpt)} compatible={netr.compat}")
+    else:
+        n.apply_ic()
+
+    log = {k: [] for k in ("z", "xy", "wt", "wu", "rate", "att", "tilt")}
     t_wall = time.time()
     for i in range(a.steps):
         if a.sync == "state":
@@ -238,16 +418,19 @@ def main():
                 while n.states_received == seen and time.time() - t0 < 2.0:
                     time.sleep(0.0001)
         pos, quat, vel, omega_w = n.state
-        R = quat_to_matrix(quat)
-        omega = R.T @ omega_w
+        R_true = quat_to_matrix(quat)
+        omega = R_true.T @ omega_w
         wdot = np.zeros(3) if prev_omega is None else (omega - prev_omega) / a.dt
         prev_omega = omega.copy()
         tom = float(lag.thrust.sum()) / a.mass
         gyro, accel = imu.measure(omega, wdot, tom, a.dt, force=True)
+        u_cmd = np.clip((last_action + 1.0) * 7.5, 0.0, 15.0)   # raw command sent (N/rotor)
         if a.src == "truth":
             rate = omega
-        elif a.src == "measured":
+        elif a.src in ("measured", "clipped"):
             rate = gyro
+        elif a.src == "net":
+            rate = netr.step(accel, gyro, u_cmd, mask)
         else:
             if i < a.calib_steps:
                 calib["g"].append(gyro); calib["a"].append(accel); calib["t"].append(tom)
@@ -260,13 +443,21 @@ def main():
                         obs_est.calibrate_joint(calib["g"], calib["a"], calib["t"])
                 rate = obs_est.step(gyro, accel, tom)
 
-        target_a, z_body = pid.step(a.dt, pos, quat, vel, target_pos)
+        # the INS integrates the *same* estimate that feeds the controller (no-leakage); dims 0:2
+        # of the observation then come from the INS attitude, never the simulator's true attitude
+        if ins is not None:
+            R = ins.update(rate, a.dt)
+            q_att = Rotation.from_matrix(R).as_quat()
+        else:
+            R, q_att = R_true, quat
+        target_a, z_body = pid.step(a.dt, pos, q_att, vel, target_pos)
         r_xy = np.hypot(z_body[0], z_body[1])
         if r_xy > 0.26:
             s = 0.26 / r_xy
             z_body = np.array([z_body[0] * s, z_body[1] * s,
                                np.sqrt(1 - (z_body[0] * s) ** 2 - (z_body[1] * s) ** 2)])
         rel = R.T @ z_body
+        att = float(np.arccos(np.clip(float(np.dot(rel, np.array([0.0, 0.0, 1.0]))), -1.0, 1.0)))
         obs = build_obs(rel[:2], rate, target_a, tom, last_action * mask, mask)
         action = (policy.select_action(obs, deterministic=True) if policy is not None
                   else np.zeros(4))
@@ -284,6 +475,8 @@ def main():
 
         log["z"].append(float(pos[2])); log["xy"].append(float(np.hypot(pos[0], pos[1])))
         log["wt"].append(omega.copy()); log["wu"].append(np.asarray(rate).copy())
+        log["att"].append(att)
+        log["tilt"].append(AttitudeINS.tilt_error(R, R_true))
         sleep = a.dt - (time.time() - t_wall - i * a.dt)
         if a.sync == "wall" and sleep > 0:
             time.sleep(sleep)
@@ -300,6 +493,9 @@ def main():
           f"xy_last={xy[-w:].mean():6.3f} |w|={np.linalg.norm(wt[-w:], axis=1).mean():6.1f} rad/s "
           f"wz={wt[-w:, 2].mean():7.2f} sat={100*sat.mean():4.0f}% "
           f"rate_err={err[sat].mean() if sat.any() else 0:6.2f} "
+          f"att_last={np.rad2deg(np.median(np.array(log['att'])[-w:])):5.1f}deg "
+          f"tilt_med={np.rad2deg(np.mean(log['tilt'])):5.1f}deg "
+          f"att_med={np.rad2deg(np.median(log['att'])):5.1f}deg "
           f"loop={a.steps/elapsed:5.1f}Hz")
     ex.shutdown(); rclpy.shutdown()
 
