@@ -232,6 +232,8 @@ def main():
     ap.add_argument("--ep_group", type=int, default=1,
                     help="windows per episode in a batch (K); >1 enables the cross-window bias term")
     ap.add_argument("--ep_bias", type=float, default=0.0, help="weight of the cross-window bias loss")
+    ap.add_argument("--inband", type=float, default=0.0,
+                    help="weight of the in-band ERROR loss (the closed-loop-relevant quantity)")
     # ---- step 3: ablation switches ----
     ap.add_argument("--ablate", default="", help="comma list of loss terms to drop: "
                                                   "bias,att,phys,torque,spec,prior")
@@ -347,6 +349,14 @@ def main():
         num = (p * him[:, :, None]).sum(1)
         den = (p * (~him)[:, :, None]).sum(1).clamp_min(1e-6)
         l_spec = (num / den).mean()
+        # In-band ERROR loss, which is what the closed loop actually needs.  L_spec penalises the
+        # *estimate's* high-frequency power -- but the true rate genuinely carries 26.9 % of its power
+        # above 10 Hz (measured over 480 ms windows), so suppressing it removes signal.  The tolerance
+        # probe showed the binding quantity is the in-band (below ~20 Hz) amplitude of the *error*:
+        # the loop holds with zero-mean sigma <= 2 rad/s and dies at 5.  So penalise exactly that.
+        edft = torch.einsum("fw,bwc->bfc", dc_, w_hat - B["w_true"]).abs()
+        lo = ~him                                              # (B, F) low-frequency mask
+        l_inband = (huber(edft * lo[:, :, None]).sum(1).mean(-1)).mean()
         l_prior = torch.zeros((), device=dev)
         if not stage1:
             l_prior = (huber(r_id - B["prior_t"][:, :3]).mean() / 0.02
@@ -354,9 +364,10 @@ def main():
         total = (l_rate + w("att", 0.5 * l_att) + w("phys", 0.3 * l_phys)
                  + w("torque", 0.1 * l_torque)
                  + w("spec", 0.05 * l_spec) + w("prior", 2.0 * l_prior) + w("bias", 1.0 * l_bias)
-                 + a.ep_bias * l_epbias)
+                 + a.ep_bias * l_epbias
+                 + a.inband * l_inband)
         return total, dict(rate=l_rate, att=l_att, phys=l_phys, torque=l_torque,
-                           spec=l_spec, prior=l_prior, bias=l_bias, epbias=l_epbias), w_hat, R_hat
+                           spec=l_spec, prior=l_prior, bias=l_bias, epbias=l_epbias, inband=l_inband), w_hat, R_hat
 
     print("\n=== training (stage 1: physics head only; stage 2: + parameter head) ===")
     t0 = time.time()
@@ -394,7 +405,7 @@ def main():
             print(f"  it{it:5d} {'S1' if stage1 else 'S2'} L={float(loss):8.3f} "
                   f"| rate {float(parts['rate']):7.3f} att {float(parts['att']):6.3f} "
                   f"phys {float(parts['phys']):6.3f} torq {float(parts['torque']):6.3f} "
-                  f"spec {float(parts['spec']):5.3f} bias {float(parts['bias']):6.3f} prior {float(parts['prior']):5.3f} epb {float(parts['epbias']):6.3f} "
+                  f"spec {float(parts['spec']):5.3f} bias {float(parts['bias']):6.3f} prior {float(parts['prior']):5.3f} epb {float(parts['epbias']):5.3f} inb {float(parts['inband']):6.3f} "
                   f"| val L={float(lv):8.3f} rate {float(pv['rate']):7.3f} att {float(pv['att']):6.3f} "
                   f"({time.time()-t0:4.0f}s)")
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
