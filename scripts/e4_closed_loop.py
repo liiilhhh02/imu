@@ -80,6 +80,12 @@ RL_DIR = None
 PN_BIAS = 0.0
 PN_SIGMA = 0.0
 PN_RNG = np.random.default_rng(0)
+# Causal one-pole low-pass on the NETWORK estimate (fc in Hz, 0 = off).  The proper 480 ms spectrum
+# (docs/STATUS.md 4.2) shows 54.5 % of the network error power above 10 Hz and 22.2 % above 20 Hz,
+# while the true rate has only 1.8 % above 20 Hz -- i.e. a large part of the error IS filterable.
+# The filter state is seeded from the first sample so there is no start-up transient.
+NET_LP = 0.0
+NET_LP_STATE = None
 DT = 1.0 / 200.0
 POST_FAULT_S = 1.5       # open-loop logging appended after the fault for identification (seconds)
 #                          (this is where the gyro saturates, so the lever arm's |r_perp| becomes
@@ -386,13 +392,16 @@ def main():
                     help="tolerance probe: constant bias added to the TRUE rate [rad/s]")
     ap.add_argument("--pn_sigma", type=float, default=0.0,
                     help="tolerance probe: white noise std added to the TRUE rate [rad/s]")
+    ap.add_argument("--net_lp", type=float, default=0.0,
+                    help="causal low-pass cutoff [Hz] applied to the net estimate (0 = off)")
     ap.add_argument("--verbose", action="store_true", help="also print the per-draw final z of "
                                                            "every src (audit the escape rate)")
     a = ap.parse_args()
     global RL_NAME, RL_DIR
     RL_NAME, RL_DIR = a.rl_ckpt, a.rl_dir
-    global PN_BIAS, PN_SIGMA
+    global PN_BIAS, PN_SIGMA, NET_LP, NET_LP_STATE
     PN_BIAS, PN_SIGMA = float(a.pn_bias), float(a.pn_sigma)
+    NET_LP, NET_LP_STATE = float(a.net_lp), None
     if PN_BIAS or PN_SIGMA:
         SRCS.append("truth_noisy")
     print("=== E4 closed loop: w_hat drives BOTH the attitude INS and the controller rate input ===")
