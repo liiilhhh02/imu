@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
 """The pybullet rotor-failure experiment, ported to Gazebo Classic (ROS2 Humble).
 
-Same control stack as `me/scripts/verify_observer.py`:
+Same control stack as `scripts/study_truth_rate.py` (the reference loop):
   outer position PID (`gpd_me.policy.PositionPID`, a port of RLShutDownControl)
-  -> 15-D observation -> ACRL inner policy -> per-rotor thrust [0, 15] N
-  -> first-order thrust lag -> equivalent wrench at the CoM -> `/apply_link_wrench`
+  -> 15-D observation (same construction as `MetaShutDown7._computeObs`) -> ACRL policy
+  -> per-rotor thrust [0, 15] N -> first-order thrust lag -> wrench at the CoM.
 
-The IMU is the same model as in pybullet (`gpd_me.imu`): saturating gyro + lever-arm accelerometer
-built from Gazebo's *true* base-link state.  `--src` selects what the controller is allowed to see:
+Wrench path: the body-frame wrench is published on `/cf2/cmd_wrench`
+(`libgazebo_ros_force` with `<force_frame>link</force_frame>`), which applies
+`AddRelativeForce` + `AddRelativeTorque` at the CoM every physics step -- the same wrench
+`gpd_me.policy.mixer_body_wrench` builds for the pybullet plant (whose `_physics` is
+`MetaBaseAviary4._physics`; its yaw reaction is `KM*(t0-t1+t2-t3)`, matching the mixer).
 
+Fault initial condition: `MetaShutDown7.shut_down_rotors(flag)` re-poses the drone at
+[0,0,1] with a preset spin for flags 2/3 (`angularVelocity=[U(-3,3),U(-3,3),-U(24,26)]`).
+Without that spin the adjacent-pair failure is unrecoverable even in pybullet (measured),
+so the runner draws it too (`--seed` to reproduce a draw).
+
+Loop synchronisation: one control step per `--substeps` physics steps, paced by the
+`/model_states` publisher (whose `update_rate` in `me.world` therefore equals the physics
+rate). `/clock` is published by `gazebo_ros_init` at only 10 Hz by default and its rate
+cannot be changed at runtime (the Throttler is built once in Load()), so it must not be
+used to pace a 200 Hz loop. The substep ratio is auto-detected from the measured state rate,
+so the control loop stays at its 200 Hz design point.
+
+`--src` selects what the controller is allowed to see:
     truth     ground-truth body rate            (upper bound)
     measured  saturated gyro                    (the failure case)
     override  lever-arm observer reconstruction (route A)
-
-Gazebo wrench semantics learned the hard way (see README): a finite `duration` combined with an
-unset `start_time` makes the wrench expire immediately, so this runner always uses duration = -1
-and relies on re-application replacing the previous wrench.
 """
 import argparse
 import os
@@ -58,6 +70,7 @@ class Runner(Node):
         self.a = a
         self.state = None
         self.states_received = 0
+        self.state_hz = 200.0
         self.sim_t = None
         self.create_subscription(ModelStates, "/model_states", self._on_states, 10)
         self.create_subscription(Clock, "/clock", self._on_clock,
@@ -104,6 +117,14 @@ class Runner(Node):
         t0 = time.time()
         while self.states_received == 0 and time.time() - t0 < 8:
             time.sleep(0.01)
+        # measure the physics/state rate while the drone is still free-falling from the spawn
+        # (the fault IC below re-poses it), so the control loop can be kept at its 200 Hz design
+        # point whatever update_rate the world uses
+        m0, w0 = self.states_received, time.time()
+        time.sleep(0.4)
+        self.state_hz = (self.states_received - m0) / max(time.time() - w0, 1e-9)
+        self.state = None
+        self.states_received = 0
         if self.a.spin_init > 0:
             omega0 = np.array([0.0, 0.0, -float(self.a.spin_init)])
         else:
@@ -165,7 +186,8 @@ def main():
     pa.add_argument("--mass", type=float, default=1.0)
     pa.add_argument("--km", type=float, default=0.01)
     pa.add_argument("--delay", type=float, default=0.026)
-    pa.add_argument("--kappa", type=float, default=0.0025, help="body-rate damping torque coeff")
+    pa.add_argument("--kappa", type=float, default=0.0025,
+                    help="body-rate damping torque coeff (torque = -kappa*omega)")
     pa.add_argument("--spin_init", type=float, default=0.0)
     pa.add_argument("--target_pos", type=float, nargs=3, default=[0.0, 0.0, 1.0])
     pa.add_argument("--calib_steps", type=int, default=0)
@@ -176,9 +198,10 @@ def main():
                          "update_rate must equal the physics rate); wall: wall-clock dt pacing")
     pa.add_argument("--seed", type=int, default=None,
                     help="RNG seed for the random fault initial spin (default: fresh entropy)")
-    pa.add_argument("--substeps", type=int, default=1,
-                    help="physics steps per control step: act on every Nth /model_states message "
-                         "(requires the world's physics/state rate to be N x 200 Hz)")
+    pa.add_argument("--substeps", type=int, default=0,
+                    help="physics steps per control step: act on every Nth /model_states message; "
+                         "0 (default) auto-detects it from the measured state rate so the control "
+                         "loop stays at 200 Hz whatever the world's physics rate is")
     a = pa.parse_args()
 
     rclpy.init()
@@ -194,6 +217,10 @@ def main():
                         gyro_noise_std=0.05, accel_noise_std=0.02))
     obs_est = LeverArmObserver(gyro_limit_dps=a.dps) if a.src == "override" else None
     n.setup()
+    if a.substeps <= 0:
+        a.substeps = max(1, int(round(n.state_hz / 200.0)))
+    print(f"[gz] state rate {n.state_hz:.0f} Hz -> substeps={a.substeps} "
+          f"(control at {n.state_hz / a.substeps:.0f} Hz)")
     mask = np.array(SHUT_DOWN[a.flag], dtype=float)
     target_pos = np.array(a.target_pos, dtype=float)
     last_action = np.zeros(4)

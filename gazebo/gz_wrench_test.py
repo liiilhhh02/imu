@@ -160,40 +160,54 @@ class H(Node):
                 np.array([s.twist.angular.x, s.twist.angular.y, s.twist.angular.z]),
                 stamp)
 
+    def sim_now(self):
+        """Exact simulation time of the current state (service header stamp).
+
+        /clock is published by gazebo_ros_init at 10 Hz by default, so it cannot time a 200 Hz
+        experiment; /get_entity_state stamps the state with world->SimTime() instead.
+        """
+        return self.get()[4]
+
     def wait_sim(self, dur, wall_timeout=30.0):
-        t0 = self.sim_t
-        if t0 is None:
-            return
+        t0 = self.sim_now()
         w0 = time.time()
-        while self.sim_t - t0 < dur and time.time() - w0 < wall_timeout:
-            time.sleep(0.0005)
+        while self.sim_now() - t0 < dur and time.time() - w0 < wall_timeout:
+            time.sleep(0.0003)
 
     def apply_topic(self, force, torque, dur, sync="clock"):
         """Publish a constant body-frame wrench for ``dur`` seconds of *sim* time.
 
-        sync='clock': publish one message per physics step (clock-gated) -- the correct,
-                      sim-locked policy.
-        sync='wall' : publish at 200 Hz of *wall* time (what gz_runner.py does today).
+        sync='clock': publish one message per 5 ms of simulation time, paced by the exact state
+                      stamp -- the correct, sim-locked policy.
+        sync='wall' : publish at 200 Hz of *wall* time (what gz_runner.py originally did).
         Returns (n_published, n_physics_steps, actual_elapsed_sim_time).
         """
         w = Wrench()
         w.force = Vector3(x=float(force[0]), y=float(force[1]), z=float(force[2]))
         w.torque = Vector3(x=float(torque[0]), y=float(torque[1]), z=float(torque[2]))
-        t0 = self.sim_t
+        t0 = self.sim_now()
         steps0 = self.steps
         n = 0
-        w0 = time.time()
+        t_stop = t0
         if sync == "clock":
             next_t = t0
-            while self.sim_t - t0 < dur and time.time() - w0 < 30.0:
-                if self.sim_t >= next_t:
-                    self.pub.publish(w); n += 1; next_t += CTRL_DT
+            while True:
+                st = self.sim_now()
+                if st - t0 >= dur:
+                    break
+                if st >= next_t:
+                    self.pub.publish(w); n += 1
+                    next_t += CTRL_DT
+                    if st - next_t > 0.05:      # never let a slow loop fall far behind
+                        next_t = st + CTRL_DT
+                t_stop = st
                 time.sleep(0.0002)
         else:
+            w0 = time.time()
             while time.time() - w0 < dur:
                 self.pub.publish(w); n += 1
                 time.sleep(CTRL_DT)
-        t_stop = self.sim_t
+            t_stop = self.sim_now()
         self.zero_wrench()
         return n, self.steps - steps0, t_stop - t0
 
@@ -319,17 +333,17 @@ def test_trace(n, args):
     n.wait_sim(0.05)
     force = [0.0, 0.0, MASS * G]
     w = Wrench(); w.force = Vector3(x=0.0, y=0.0, z=float(force[2]))
-    t0 = n.sim_t
+    t0 = n.sim_now()
     next_t = t0
     next_sample = t0
     npub = 0
     rows = []
     print(f"TEST trace force={force} dur={args.dur}s")
-    print(f"     {'sim_t':>9} {'stamp':>9} {'n_pub':>6} {'z':>10} {'vz':>10} {'|w|':>8}")
-    while n.sim_t - t0 < args.dur:
-        if n.sim_t >= next_t:
+
+    while n.sim_now() - t0 < args.dur:
+        if n.sim_now() >= next_t:
             n.pub.publish(w); npub += 1; next_t += CTRL_DT
-        if n.sim_t >= next_sample:
+        if n.sim_now() >= next_sample:
             s = n.get()
             rows.append((n.sim_t, s[4], npub, s[0][2], s[2][2], np.linalg.norm(s[3])))
             next_sample += 0.05
@@ -380,17 +394,17 @@ def test_plant(n, args):
     w.force = Vector3(x=float(force[0]), y=float(force[1]), z=float(force[2]))
     w.torque = Vector3(x=float(torque[0]), y=float(torque[1]), z=float(torque[2]))
     print(f"TEST plant force={force} torque={torque} w0=[0,0,{args.spin}]")
-    t0 = n.sim_t
+    t0 = n.sim_now()
     next_pub, next_s = t0, t0
     print(f"     {'t':>5} {'z':>9} {'wx':>8} {'wy':>8} {'wz':>8} {'|w|':>7}")
-    while n.sim_t - t0 < args.dur:
-        if n.sim_t >= next_pub:
+    while n.sim_now() - t0 < args.dur:
+        if n.sim_now() >= next_pub:
             n.pub.publish(w); next_pub += CTRL_DT
-        if n.sim_t >= next_s:
+        if n.sim_now() >= next_s:
             _, quat, _, angw, _ = n.get()
             wb = body_rate(quat, angw)
             s = n.get()
-            print(f"     {n.sim_t-t0:5.2f} {s[0][2]:9.4f} {wb[0]:8.3f} {wb[1]:8.3f} {wb[2]:8.3f} "
+            print(f"     {n.sim_now()-t0:5.2f} {s[0][2]:9.4f} {wb[0]:8.3f} {wb[1]:8.3f} {wb[2]:8.3f} "
                   f"{np.linalg.norm(wb):7.2f}")
             next_s += 0.1
         time.sleep(0.0003)
