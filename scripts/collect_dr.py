@@ -103,12 +103,24 @@ def _one_episode_impl(job):
     # M/KM/delay/inertia/damping back.  The randomised plant must therefore be applied *after* it,
     # otherwise the airframe randomisation is silently inert (it was, until this was found).
     env.shut_down_rotors(flag)
+    # `shut_down_rotors` does reset() + mask + (flags 2/3) an *immediate* initial yaw spin.  That spin
+    # must NOT be present during the nominal identification phase: it saturates the gyro for most of
+    # that phase at low/mid range (measured on dr_1e7_v2: 98 %/72 %/38 %/13 % of nominal frames have a
+    # saturated axis at 100/300/1000/1500 dps for flag 3), which silently poisons every prior that is
+    # identified from it -- the nominal segment is supposed to be a clean hover + yaw manoeuvre.
+    # So: record the env's own spin, clear it for the nominal phase, and re-apply it at the fault.
+    spin_env = np.asarray(env.ang_vel, float).ravel().copy()
     env.shut_down = np.ones(4)               # healthy during the nominal phase
+    p.resetBaseVelocity(objectUniqueId=env.DRONE_IDS[0], linearVelocity=[0, 0, 0],
+                        angularVelocity=[0, 0, 0], physicsClientId=env.CLIENT)
+    env._updateAndStoreKinematicInformation()
     p.changeDynamics(env.DRONE_IDS[0], -1, mass=M, localInertiaDiagonal=J.tolist(),
                      angularDamping=damping, physicsClientId=env.CLIENT)
     env.M, env.KM, env.delay = M, KM, delay
     M_applied = float(p.getDynamicsInfo(env.DRONE_IDS[0], -1, physicsClientId=env.CLIENT)[0])
-    spin_at_fault = list(rng.uniform(-6, 6, 2)) + [-float(rng.uniform(0, 55))] if flag in (1, 3) else [0, 0, 0]
+    # the fault-time spin is the environment's own draw (kept from `shut_down_rotors` above), so the
+    # training distribution matches exactly what the supervisor's fault injection produces
+    spin_at_fault = spin_env if flag in (1, 3) else np.zeros(3)
 
     # --- episode structure: a NOMINAL phase first (hover + a deliberate yaw-identification
     # manoeuvre, which is what makes every prior identifiable from flight data), then the fault ---

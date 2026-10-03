@@ -1,0 +1,2 @@
+[01:21:22] run=robust_flag3 warm_start=shutdown_real_7_4 device=cuda train_freq=50 dps=1000.0 lam_max0=0.3 ramp=800 ep_len=250
+[01:21:23] warm start from /home/liiil/Downloads/gym-pybullet-drones/gym_pybullet_drones/model/shutdown_real_7_4
