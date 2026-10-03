@@ -438,10 +438,13 @@ def test_replay(n, args):
     n.reset(z=1.0)
     lag = np.full(4, 2.4525) if args.cmdset == "yaw" else np.zeros(4)
     rows = []
+    t_ref = None
     mask = np.ones(4)
     for k in range(args.steps):
         st = n.get()
-        rows.append((k * CTRL_DT, st[0].copy(), st[1].copy(), st[3].copy(), st[2].copy()))
+        if t_ref is None:
+            t_ref = st[4]
+        rows.append((st[4] - t_ref, st[0].copy(), st[1].copy(), st[3].copy(), st[2].copy()))
         if args.cmdset == "yaw":
             base, d, sg, k0 = 2.4525, args.d, args.dsign, 20
             u = (np.full(4, base) if k < k0 else
