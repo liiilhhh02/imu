@@ -9,3 +9,21 @@ pybullet build time: Jan 29 2025 23:16:28
 [01:21:23] warm start from /home/liiil/Downloads/gym-pybullet-drones/gym_pybullet_drones/model/shutdown_real_7_4
 /home/liiil/Downloads/gym-pybullet-drones/.venv-repro/lib/python3.10/site-packages/gym/spaces/box.py:127: UserWarning: [33mWARN: Box bound precision lowered by casting to float32[0m
   logger.warn(f"Box bound precision lowered by casting to {self.dtype}")
+[01:22:12] EVAL ep     0 lam=0.00: held 4/4  z_med 3.44  att_med 27.2
+[01:22:12] EVAL ep     0 lam=0.50: held 0/4  z_med -21.22  att_med 71.1
+[01:22:12] EVAL ep     0 lam=1.00: held 0/4  z_med -62.63  att_med 64.3
+[01:22:17] ep     1 lam<=0.30 rew= -59.44 att=307.0deg buf=1000 ep/s= 0.02 eta=3:29:05
+[01:22:22] ep     2 lam<=0.30 rew= -68.72 att=317.2deg buf=2000 ep/s= 0.03 eta=3:29:00
+[01:22:27] ep     3 lam<=0.30 rew= -59.48 att=294.1deg buf=3000 ep/s= 0.05 eta=3:28:55
+[01:22:33] ep     4 lam<=0.30 rew= -48.02 att=269.0deg buf=4000 ep/s= 0.06 eta=3:28:50
+[01:22:38] ep     5 lam<=0.30 rew= -50.69 att=258.2deg buf=5000 ep/s= 0.07 eta=3:28:44
+[01:22:43] ep     6 lam<=0.30 rew= -52.17 att=246.2deg buf=6000 ep/s= 0.07 eta=3:28:39
+[01:22:49] ep     7 lam<=0.31 rew= -59.33 att=265.7deg buf=7000 ep/s= 0.08 eta=3:28:34
+[01:22:55] ep     8 lam<=0.31 rew= -59.34 att=271.0deg buf=8000 ep/s= 0.09 eta=3:28:28
+[01:23:00] ep     9 lam<=0.31 rew= -56.84 att=265.3deg buf=9000 ep/s= 0.09 eta=3:28:22
+[01:23:06] ep    10 lam<=0.31 rew= -55.07 att=255.1deg buf=10000 ep/s= 0.10 eta=3:28:17
+[01:23:11] ep    11 lam<=0.31 rew= -54.72 att=261.1deg buf=11000 ep/s= 0.10 eta=3:28:11
+[01:23:17] ep    12 lam<=0.31 rew= -56.11 att=271.3deg buf=12000 ep/s= 0.11 eta=3:28:06
+[01:23:23] ep    13 lam<=0.31 rew= -50.82 att=243.2deg buf=13000 ep/s= 0.11 eta=3:28:00
+[01:23:28] ep    14 lam<=0.31 rew= -51.83 att=251.8deg buf=14000 ep/s= 0.11 eta=3:27:55
+[01:23:33] ep    15 lam<=0.31 rew= -61.18 att=271.6deg buf=15000 ep/s= 0.12 eta=3:27:49

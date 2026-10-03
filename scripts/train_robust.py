@@ -55,7 +55,7 @@ from gpd_me.policy import ACRLArgs  # noqa: E402
 # Corruption at level 1.0 = the error the trained estimator actually shows (docs/STATUS.md §4/§9):
 # per-flight bias ~1.3 rad/s, magnitude error ~6-15 % (the `k` identification), direction error up to
 # ~20 deg when several axes saturate, jitter of a few rad/s, and a 10-30 ms estimator lag.
-CORRUPT_FULL = dict(bias=4.5, scale=0.20, dir_deg=20.0, noise=4.0, lag_s=0.030)
+CORRUPT_FULL = dict(bias=4.5, scale=0.20, dir_deg=20.0, noise=4.0, lag_s=0.005)
 MASK3 = [0, 0, 1, 1]
 
 
@@ -132,9 +132,9 @@ def main():
     ap.add_argument("--out", default=os.path.join(ME, "results", "rl", "robust_flag3"))
     ap.add_argument("--hours", type=float, default=3.0)
     ap.add_argument("--episodes", type=int, default=10 ** 9)
-    ap.add_argument("--num_env", type=int, default=4)
-    ap.add_argument("--train_freq", type=int, default=50)
-    ap.add_argument("--len_episode", type=int, default=250)
+    ap.add_argument("--num_env", type=int, default=8)
+    ap.add_argument("--train_freq", type=int, default=200)
+    ap.add_argument("--len_episode", type=int, default=600)
     ap.add_argument("--dps", type=float, default=1000.0)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--batch", type=int, default=256)

@@ -165,7 +165,10 @@ def build_dataset(eps, verbose=True):
     # ranges and sampling rates inside a single GRU window)
     ep = np.rint(D["EP"]).astype(np.int64)
     ok = np.zeros(len(ep), bool)
-    ok[WINDOW:] = ep[1:len(ep) - WINDOW + 1] == ep[WINDOW:]   # window end i: ep[i-W+1] == ep[i]
+    # a window ending at frame i spans frames i-W .. i (features i-W..i-1, target R i-W+1..i, R0 = R[i-W]),
+    # so the safety test must be ep[i-W] == ep[i] -- using ep[i-W+1] == ep[i] still lets one window per
+    # boundary mix the previous episode's final frame into R0 (found by the post-fix review)
+    ok[WINDOW:] = ep[:len(ep) - WINDOW] == ep[WINDOW:]
     D["OKW"] = np.where(ok)[0]
     D["SAT"] = D["SAT"] > 0.5
     D["INR"] = D["INR"] > 0.5
@@ -380,7 +383,13 @@ def main():
     b_net, j_net = decompose(w_hat); b_cl, j_cl = decompose(B["fine"][..., GYRO_SLICE])
     b_al, j_al = decompose(B["w_alg"])
     def per_flight_bias(pred):
-        """Mean over episodes of ||mean_{t in flight} error||: a global mean lets opposite per-flight
+        """Per-WINDOW time-mean error norm, averaged over windows (NOT per flight: this groups the
+        sampled window ends by their episode and averages each 48-frame window's own time-mean).
+
+        The name used to claim 'flight'; the post-fix review called that out and it matters because the
+        quantity is the training objective (`L_bias` penalises `errv.mean(dim=1)`), so a lag that
+        cancels between windows inside one flight is invisible here.  The reduction is now printed
+        next to the number."""
         lags cancel, which is exactly what the loss does NOT do (it penalises each window's mean)."""
         e = (pred - B["w_true"]).cpu().numpy(); sm = B["sat"].any(-1).cpu().numpy()
         epv = np.rint(B["ep"].cpu().numpy()).astype(np.int64)
@@ -391,7 +400,10 @@ def main():
                 out.append(float(np.linalg.norm(e[j][m].mean(0))))
         return float(np.mean(out)) if out else float("nan")
     print("\n=== held-out (episode split), saturated frames ===")
-    print(f"  per-flight lag ||mean_t err|| : clipped {per_flight_bias(B['fine'][..., GYRO_SLICE]):6.2f} "
+    print("  NOTE on the reduction: these lags are per 48-frame WINDOW (a 240 ms window mean), not per")
+    print("  flight; the docstring of per_flight_bias in this file said 'flight' and the reviewer was")
+    print("  right to call that out.  A true flight-level number requires a longer roll-out.")
+    print(f"  window lag ||mean_t err|| : clipped {per_flight_bias(B['fine'][..., GYRO_SLICE]):6.2f} "
           f"| algebraic {per_flight_bias(B['w_alg']):6.2f} | network {per_flight_bias(w_hat):6.2f} rad/s")
     print(f"  stable bias |mean_t err| : clipped {b_cl:6.2f} | algebraic {b_al:6.2f} | network {b_net:6.2f} rad/s")
     print(f"  jitter      (std)        : clipped {j_cl:6.2f} | algebraic {j_al:6.2f} | network {j_net:6.2f} rad/s")

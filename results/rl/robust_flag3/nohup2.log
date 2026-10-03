@@ -1,0 +1,23 @@
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+pybullet build time: Jan 29 2025 23:16:28
+/home/liiil/Downloads/gym-pybullet-drones/gym_pybullet_drones/control/BaseControl.py:4: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  import pkg_resources
+[01:26:33] run=robust_flag3 warm_start=shutdown_real_7_4 device=cuda train_freq=200 dps=1000.0 lam_max0=0.3 ramp=800 ep_len=600
+[01:26:34] warm start from /home/liiil/Downloads/gym-pybullet-drones/gym_pybullet_drones/model/shutdown_real_7_4
+/home/liiil/Downloads/gym-pybullet-drones/.venv-repro/lib/python3.10/site-packages/gym/spaces/box.py:127: UserWarning: [33mWARN: Box bound precision lowered by casting to float32[0m
+  logger.warn(f"Box bound precision lowered by casting to {self.dtype}")
+[01:27:12] EVAL ep     0 lam=0.00: held 4/4  z_med 3.80  att_med 27.4
+[01:27:12] EVAL ep     0 lam=0.50: held 0/4  z_med -7.74  att_med 44.4
+[01:27:12] EVAL ep     0 lam=1.00: held 0/4  z_med -37.17  att_med 68.2
+[01:27:27] ep     1 lam<=0.30 rew=-108.46 att=401.3deg buf=4800 ep/s= 0.02 eta=3:29:07
+[01:27:42] ep     2 lam<=0.30 rew= -42.98 att=221.5deg buf=9600 ep/s= 0.03 eta=3:28:52
+[01:27:57] ep     3 lam<=0.30 rew= -27.92 att=288.7deg buf=14400 ep/s= 0.04 eta=3:28:38
+[01:28:13] ep     4 lam<=0.30 rew= -21.86 att=248.3deg buf=19200 ep/s= 0.04 eta=3:28:22
+[01:28:29] ep     5 lam<=0.30 rew= -28.82 att=326.3deg buf=24000 ep/s= 0.04 eta=3:28:06
+[01:28:43] ep     6 lam<=0.30 rew= -27.34 att=276.0deg buf=28800 ep/s= 0.05 eta=3:27:51
+[01:28:58] ep     7 lam<=0.31 rew= -28.96 att=322.6deg buf=33600 ep/s= 0.05 eta=3:27:36
+[01:29:15] ep     8 lam<=0.31 rew= -27.39 att=297.3deg buf=38400 ep/s= 0.05 eta=3:27:20
+[01:29:31] ep     9 lam<=0.31 rew= -25.91 att=307.3deg buf=43200 ep/s= 0.05 eta=3:27:04
