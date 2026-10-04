@@ -1,3 +1,27 @@
 [12:14:20] run=deploy_flag3 estimator=results/e2e_v12.pt warm_start=shutdown_real_7_4 device=cuda anchor=0.3 ep_len=600 envs=8
 [12:14:30] identified 8 draws in 9s: k_med 0.005m k_range [0.001,0.012]
 [12:14:53] EVAL ep 0: truth 4/4  net 2/4
+[12:15:07] ep     1 z=-5.50 rew=  -0.11 anchors=3/8 buf=4792 ep/s= 0.03 eta=2:59:24
+[12:15:20] ep     2 z=-1.44 rew=  -0.09 anchors=3/8 buf=9584 ep/s= 0.04 eta=2:59:11
+[12:15:33] ep     3 z= 0.66 rew=  -0.09 anchors=3/8 buf=14376 ep/s= 0.05 eta=2:58:58
+[12:15:52] ep     4 z=-3.31 rew=  -0.11 anchors=0/8 buf=19168 ep/s= 0.05 eta=2:58:38
+[12:16:10] ep     5 z=-0.55 rew=  -0.09 anchors=1/8 buf=23960 ep/s= 0.05 eta=2:58:20
+[12:16:28] ep     6 z= 0.11 rew=  -0.10 anchors=1/8 buf=28752 ep/s= 0.05 eta=2:58:02
+[12:16:39] ep     7 z=-0.09 rew=  -0.10 anchors=4/8 buf=33544 ep/s= 0.05 eta=2:57:51
+[12:16:50] ep     8 z= 0.48 rew=  -0.09 anchors=4/8 buf=38336 ep/s= 0.06 eta=2:57:41
+[12:17:03] ep     9 z=-0.23 rew=  -0.09 anchors=3/8 buf=43128 ep/s= 0.06 eta=2:57:27
+[12:17:25] ep    10 z=-1.21 rew=  -0.10 anchors=0/8 buf=47920 ep/s= 0.06 eta=2:57:05
+[12:17:46] ep    11 z=-2.87 rew=  -0.12 anchors=0/8 buf=52712 ep/s= 0.06 eta=2:56:44
+[12:18:03] ep    12 z=-1.63 rew=  -0.12 anchors=2/8 buf=57504 ep/s= 0.06 eta=2:56:27
+[12:18:19] ep    13 z= 0.91 rew=  -0.10 anchors=2/8 buf=62296 ep/s= 0.06 eta=2:56:11
+[12:18:34] ep    14 z=-0.10 rew=  -0.11 anchors=3/8 buf=67088 ep/s= 0.06 eta=2:55:57
+[12:18:48] ep    15 z=-0.03 rew=  -0.11 anchors=3/8 buf=71880 ep/s= 0.06 eta=2:55:43
+[12:19:02] ep    16 z=-0.31 rew=  -0.12 anchors=3/8 buf=76672 ep/s= 0.06 eta=2:55:28
+[12:19:16] ep    17 z=-1.32 rew=  -0.11 anchors=3/8 buf=81464 ep/s= 0.06 eta=2:55:14
+[12:19:35] ep    18 z= 0.30 rew=  -0.12 anchors=1/8 buf=86256 ep/s= 0.06 eta=2:54:55
+[12:19:51] ep    19 z=-1.10 rew=  -0.13 anchors=2/8 buf=91048 ep/s= 0.06 eta=2:54:39
+[12:20:02] ep    20 z=-1.23 rew=  -0.13 anchors=4/8 buf=95840 ep/s= 0.06 eta=2:54:28
+[12:20:21] ep    21 z= 0.10 rew=  -0.13 anchors=1/8 buf=100632 ep/s= 0.06 eta=2:54:09
+[12:20:40] ep    22 z=-2.31 rew=  -0.13 anchors=1/8 buf=105424 ep/s= 0.06 eta=2:53:50
+[12:20:57] ep    23 z= 2.43 rew=  -0.13 anchors=2/8 buf=110216 ep/s= 0.06 eta=2:53:34
+[12:21:13] ep    24 z=-5.20 rew=  -0.17 anchors=2/8 buf=115008 ep/s= 0.06 eta=2:53:17

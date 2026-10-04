@@ -235,6 +235,20 @@ class NetRate:
             self.xp_s = torch.ones(len(self.prior), device=dev)
         self.buf = {k: [] for k in ("a", "g", "u", "m")}
 
+    def preseed(self, gyro, accel, u_cmd, mask):
+        """Fill the rolling window with the real pre-fault samples.
+
+        Without this the window starts by repeating the first *post-fault* sample, i.e. the
+        estimator spends its first ~WINDOW steps looking at a fake constant history exactly while
+        the vehicle is spinning at 40+ rad/s and the controller has to break that spin.  A real
+        vehicle has the pre-fault history (unsaturated gyro, accelerometer and commands -- all
+        measured), so using it is both legitimate and strictly more informative.
+        """
+        for key, val in (("g", gyro), ("a", accel), ("u", u_cmd), ("m", mask)):
+            arr = np.asarray(val, float)
+            self.buf[key] = [arr[i] for i in range(len(arr))]
+
+
     def step(self, accel, gyro, u_cmd, mask):
         """One causal estimator step: returns w_hat for the current instant.
 

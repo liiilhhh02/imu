@@ -390,6 +390,8 @@ def main():
                     help="RNG seed for the random fault initial spin (default: fresh entropy)")
     pa.add_argument("--ckpt", default=None, help="trained e2e estimator checkpoint for --src net "
                                                   "(default results/e2e_v7.pt, else e2e_v8.pt)")
+    pa.add_argument("--rl_ckpt", default=None, help="override the inner-loop policy checkpoint name")
+    pa.add_argument("--rl_dir", default=None, help="directory that holds it (see e4_closed_loop.py)")
     pa.add_argument("--id_post", type=float, default=1.5,
                     help="seconds of open-loop excitation logged after the fault for identification")
     pa.add_argument("--substeps", type=int, default=0,
@@ -405,7 +407,12 @@ def main():
 
     # Build the controller *before* spawning: loading a torch checkpoint takes ~1 s, and doing
     # it after the spawn lets the drone free-fall for that whole second before the loop starts.
-    policy = load_policy(CKPT[a.flag]) if a.flag in CKPT else None
+    # --rl_ckpt/--rl_dir mirror scripts/e4_closed_loop.py, so the *fine-tuned* policy can be flown
+    # here without editing the table.  The acceptance criterion is a Gazebo number, so the
+    # Gazebo port must be able to fly whatever E4 just measured.
+    policy = None
+    if a.rl_ckpt or a.rl_dir or a.flag in CKPT:
+        policy = load_policy(a.rl_ckpt or CKPT.get(a.flag, "shutdown_real_7"), a.rl_dir)
     pid = PositionPID(); lag = ActuatorLag(a.delay)
     imu = IMU(IMUConfig(gyro_range_dps=a.dps, lever_arm=LEVER_ARM,
                         gyro_noise_std=0.05, accel_noise_std=0.02))

@@ -202,23 +202,27 @@ def identification(seed=0, dps=1000.0, flag=3, post_s=None):
     assert np.array_equal(env.shut_down, MASK[flag]), (env.shut_down, MASK[flag])
     ic = (env.pos[0].copy(), env.quat[0].copy(), env.vel[0].copy(),
           np.asarray(env.ang_vel, float).copy().ravel())
+    n_pre = len(d["g"])                                  # the *nominal* (pre-fault) samples
     if post_s > 0:                                   # saturated window -> identifiable |r_perp|
         d2 = open_loop_transient(env, int(post_s / DT), seed)
         d = {k: np.concatenate([d[k], d2[k]], axis=0) for k in d}
+    # the pre-fault history: measured, unsaturated, and available to a real vehicle -- it is what a
+    # deployed estimator should start its window from instead of repeating the first post-fault sample
+    pre = {k: np.asarray(d[k][:n_pre], float) for k in ("g", "a", "u", "mask")}
     env.close()
     prior, diag = identify_priors(d["g"], d["a"], d["u"], d["w"], d["mask"], dps, DT,
                                   vel=d["v"], tom=d["tom"])
-    return prior, diag, fault_rng, ic
+    return prior, diag, fault_rng, ic, pre
 
 
 def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.0, 1.0),
-        prior=None, diag=None, fault_rng=None, ic=None):
+        prior=None, diag=None, fault_rng=None, ic=None, pre=None, preseed=True):
     """One closed-loop flight.  `prior`/`fault_rng`/`ic` come from `identification`, so several
     `src` values can be flown from the *same* fault draw (paired); calling with `prior=None`
     performs the identification and the fault draw itself.
     """
     if prior is None:
-        prior, diag, fault_rng, ic = identification(seed=seed, dps=dps, flag=flag)
+        prior, diag, fault_rng, ic, pre = identification(seed=seed, dps=dps, flag=flag)
     np.random.seed(seed)
     env = make_env(dps)
     env.reset()
@@ -238,6 +242,10 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net = NetRate(ckpt, dev, prior, dps) if src == "net" else None
+    if net is not None and preseed and pre is not None:
+        # start the rolling window from the real pre-fault history (measured, unsaturated)
+        net.preseed(pre["g"][-WINDOW:], pre["a"][-WINDOW:], pre["u"][-WINDOW:],
+                    pre["mask"][-WINDOW:])
     policy = (load_policy(RL_NAME or CKPT_RL[flag], RL_DIR) if RL_DIR
               else load_policy(RL_NAME or CKPT_RL[flag]))
     pid = PositionPID()
@@ -286,6 +294,11 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
     return dict(z=float(z[-w:].mean()), zstd=float(z[-w:].std()),
                 zmin=float(z.min()), zmax=float(z.max()), xy=float(xy[-w:].mean()),
                 tilt=float(np.mean(thr_e)), rate_err=float(np.mean(err_n)),
+                # the same error restricted to the *pre-divergence* window: averaging over a failed
+                # episode's tumbling tail makes a healthy estimator look broken
+                rate_err_early=float(np.mean(err_n[:300])),
+                tilt_early=float(np.mean(thr_e[:300])),
+                hold_steps=int(next((i for i, zz in enumerate(z) if zz < 0.3), len(z))),
                 k=float(np.linalg.norm(prior[:3])), diag=diag,
                 net_compat=getattr(net, "compat", None))
 
@@ -318,6 +331,16 @@ def main():
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--rl_ckpt", default=None, help="override the inner-loop policy checkpoint name "
                                                    "(e.g. robust_v2_latest)")
+    ap.add_argument("--dump_rows", action="store_true",
+                    help="print every draw's raw stats, including the ones that did not hold "
+                         "(rate_err/tilt/zmin/zmax) -- the only way to explain a failure")
+    ap.add_argument("--k_override", type=float, default=None,
+                    help="DIAGNOSTIC ONLY, NOT DEPLOYABLE: replace the identified |r_perp| "
+                         "with this value to isolate how much of the in-loop estimator error "
+                         "is the online identification of k")
+    ap.add_argument("--no_preseed", action="store_true",
+                    help="A/B switch: do NOT start the net's window from the real pre-fault "
+                         "history (the old behaviour was to repeat the first post-fault sample)")
     ap.add_argument("--rl_dir", default=None, help="directory that holds it")
     ap.add_argument("--pn_bias", type=float, default=0.0,
                     help="tolerance probe: constant bias added to the TRUE rate [rad/s]")
@@ -347,11 +370,21 @@ def main():
         rows = {s: [] for s in SRCS}
         for seed in range(a.seeds):
             # one identification + one fault draw per draw index, shared by every src (paired)
-            prior, diag, fault_rng, ic = identification(seed=seed, dps=dps, flag=a.flag)
+            prior, diag, fault_rng, ic, pre = identification(seed=seed, dps=dps, flag=a.flag)
+            if a.k_override is not None:
+                prior = np.asarray(prior, float).copy()
+                prior[8] = float(a.k_override)     # |r_perp|: diagnostic override, never at deployment
             for src in SRCS:
-                rows[src].append(run(flag=a.flag, dps=dps, src=src, ckpt=a.ckpt, seed=seed,
-                                     steps=a.steps, prior=prior, diag=diag,
-                                     fault_rng=fault_rng, ic=ic))
+                row = run(flag=a.flag, dps=dps, src=src, ckpt=a.ckpt, seed=seed,
+                          steps=a.steps, prior=prior, diag=diag, fault_rng=fault_rng, ic=ic,
+                          pre=pre, preseed=not a.no_preseed)
+                rows[src].append(row)
+                if a.dump_rows:      # printing only: the failures are the rows worth explaining
+                    print(f"[rows] seed={seed} src={src:6s} held={int(row['z'] > 0.3 and row['zstd'] < 3.0)} "
+                          f"z={row['z']:6.2f} zstd={row['zstd']:6.2f} zmin={row['zmin']:6.2f} "
+                          f"tilt={row['tilt']:6.1f} rate_err={row['rate_err']:6.2f} "
+                          f"| first1.5s: rate_err={row['rate_err_early']:5.2f} tilt={row['tilt_early']:5.1f} "
+                          f"| lost@step={row['hold_steps']:4d} k={row['k']*100:5.2f}cm", flush=True)
         for src in SRCS:
             m = summarize(rows[src])
             note = ""

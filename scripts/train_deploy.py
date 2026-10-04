@@ -84,7 +84,7 @@ def make_env(dps, seed, lever=(0.013, 0.004, 0.002)):
 
 def draw_fault(env, seed, dps, prior_pool):
     """Apply one *real* fault draw: replay the RNG state captured by the identification procedure."""
-    prior, diag, fault_rng, ic = prior_pool
+    prior, diag, fault_rng, ic, _pre = prior_pool
     np.random.set_state(fault_rng)
     env.shut_down_rotors(3)
     import pybullet as p
@@ -197,6 +197,8 @@ def main():
     # --- the deployment procedure's first half, once per pool slot -------------------------------
     t_ident = time.time()
     pool = [identification(seed=a.seed + 100 * k, dps=a.dps, flag=3) for k in range(a.pool)]
+    # each pool entry is (prior, diag, fault_rng, ic, pre); `pre` is the measured pre-fault
+    # history the estimator's window should start from (see NetRate.preseed)
     ks = [float(np.linalg.norm(p[0][:3])) for p in pool]
     log(f"identified {a.pool} draws in {time.time() - t_ident:.0f}s: k_med {np.median(ks):.3f}m "
         f"k_range [{min(ks):.3f},{max(ks):.3f}]", logp)
