@@ -67,7 +67,7 @@ def one_episode(job):
 
 
 def _one_episode_impl(job):
-    idx, seed, steps, out = job
+    idx, seed, steps, out, pin_dps = job
     rng = np.random.default_rng(seed)
     from gym_pybullet_drones.utils.enums import DroneModel, Physics
     from gpd_me.env_faulty import MetaAviaryFaulty
@@ -78,8 +78,12 @@ def _one_episode_impl(job):
 
     flag = int(rng.choice(list(MASKS.keys())))
     mask = np.array(MASKS[flag], float)
-    dps = float(rng.choice([100.0, 150.0, 200.0, 300.0, 400.0, 700.0, 1000.0, 1500.0,
-                            2000.0, 3000.0, 4000.0, 6000.0]))
+    dps = float(pin_dps) if pin_dps > 0 else float(rng.choice(
+        [100.0, 150.0, 200.0, 300.0, 400.0, 700.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0, 6000.0]))
+    # PIN_DPS > 0 collects a single gyro range instead of the 12-range mixture.  Use it to build a
+    # dps=2000 dataset (the professor's operating point): at 2000 dps the 43 rad/s fault spin still
+    # saturates the yaw axis (34.9 rad/s limit) but NOT the tilt axes (24-26 rad/s), so the algebraic
+    # front end is no longer fighting three saturated axes at once.
     freq = int(rng.choice(FREQS)); dt = 1.0 / freq
     lever = rng.normal(size=3); lever /= np.linalg.norm(lever); lever *= rng.uniform(0.002, 0.045)
     M, KM, delay = float(rng.uniform(0.5, 1.6)), float(rng.uniform(0.004, 0.022)), float(rng.uniform(0.008, 0.055))
@@ -253,9 +257,13 @@ def main():
     ap.add_argument("--steps", type=int, default=2000)
     ap.add_argument("--out", default=os.path.join(ME, "results", "dr_shards"))
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--dps", type=float, default=0.0,
+                    help="pin the gyro range (0 = the 12-range mixture); e.g. --dps 2000")
     a = ap.parse_args()
+    global PIN_DPS
+    PIN_DPS = float(a.dps)
     os.makedirs(a.out, exist_ok=True)
-    jobs = [(i, a.seed * 100000 + i, a.steps, a.out) for i in range(a.episodes)]
+    jobs = [(i, a.seed * 100000 + i, a.steps, a.out, float(a.dps)) for i in range(a.episodes)]
     t0 = time.time()
     print(f"collecting {a.episodes} episodes x {a.steps} steps with {a.workers} workers "
           f"({a.episodes*a.steps} steps total) -> {a.out}")
