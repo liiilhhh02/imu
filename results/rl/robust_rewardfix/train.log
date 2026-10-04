@@ -466,3 +466,11 @@
 [13:18:40] ep   437 lam<=0.50 rew= -11.97 att=204.0deg buf=1000000 ep/s= 0.16 eta=0:00:50
 [13:18:46] ep   438 lam<=0.50 rew= -11.82 att=201.8deg buf=1000000 ep/s= 0.16 eta=0:00:44
 [13:18:52] ep   439 lam<=0.50 rew= -12.19 att=204.3deg buf=1000000 ep/s= 0.16 eta=0:00:38
+[13:18:58] ep   440 lam<=0.50 rew= -12.32 att=207.9deg buf=1000000 ep/s= 0.16 eta=0:00:32
+[13:19:04] ep   441 lam<=0.51 rew= -12.90 att=211.5deg buf=1000000 ep/s= 0.16 eta=0:00:26
+[13:19:10] ep   442 lam<=0.51 rew= -12.09 att=203.2deg buf=1000000 ep/s= 0.16 eta=0:00:20
+[13:19:16] ep   443 lam<=0.51 rew= -12.31 att=206.3deg buf=1000000 ep/s= 0.16 eta=0:00:14
+[13:19:22] ep   444 lam<=0.51 rew= -11.74 att=202.6deg buf=1000000 ep/s= 0.16 eta=0:00:08
+[13:19:28] ep   445 lam<=0.51 rew= -11.84 att=203.1deg buf=1000000 ep/s= 0.16 eta=0:00:02
+[13:19:34] ep   446 lam<=0.51 rew= -12.51 att=207.1deg buf=1000000 ep/s= 0.16 eta=0:00:00
+[13:19:34] finished ep=446 elapsed=0:45:03 -> results/rl/robust_rewardfix
