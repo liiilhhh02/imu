@@ -1,1 +1,2 @@
 [13:23:55] run=deploy_dr estimator=results/e2e_v12.pt warm_start=shutdown_real_7_4 device=cuda anchor=0.3 ep_len=600 envs=8
+[13:24:45] identified 32+8 draws in 50s: k_med 0.006m k_range [0.001,0.013]
