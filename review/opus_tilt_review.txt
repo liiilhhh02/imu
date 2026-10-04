@@ -1,0 +1,45 @@
+Shell is blocked in this session, so the checks below are analytic (no runs). Both files read, plus `gpd_me/ins.py` and `gpd_me/policy.py` for context.
+
+## 1. Math and frame convention: correct, with one real gain defect
+
+The derivation and the frame are right. `a_i = R(T/M)e_z - g e_z^world` with world z-up and `g` positive gives `t = a_i + (0,0,g)`, which is exactly `tilt.py:74`. `env.vel[0]` is pybullet's world-frame base velocity, so the backward difference at `tilt.py:69` is genuinely inertial acceleration and adding a world-frame gravity vector to it is legitimate. `g=9.8` (`tilt.py:50`) matches gym-pybullet-drones' constant; a 9.81 mismatch would be ~1 mrad of static bias, irrelevant.
+
+Rodrigues at `tilt.py:97` is correct: `c` is exactly `cosθ` for unit vectors so `(1-c)` is the right `K²` coefficient, and `sin(arctan2(s,c)) == s`, so `th` (line 96) is redundant but harmless. The axis `z_ins × z_f` with positive `θ` does map `z_ins → z_f`, and left-multiplying (`R_world @ R_ins`, line 98) replaces the third column with `z_f` as intended. `arctan2(s,c)` with `s ≥ 0` picks the correct `[0,π]` branch.
+
+The defect is the blend at `tilt.py:85`. Normalized linear interpolation is not a rotation by `α·θ`; the angle it actually travels is `arctan2(α sinθ, (1-α)+α cosθ) ≈ α sinθ` for small `α`. With `DT = 1/200` (`e4_closed_loop.py:92`) and `tau=0.5`, `α ≈ 0.0099`, so the effective correction gain is scaled by `sinθ/θ`: 0.64 at 90°, 0.19 at 150°, 0.06 at 170°, i.e. `tau_eff` degrades to ~8.5 s at 170°. The loop gain collapses precisely in the large-error regime the module exists to handle. Rotating `z_ins` toward `z_meas` by `α·arctan2(s,c)` directly removes this.
+
+Second, the design point itself. A first-order complementary filter against a bias-like rate error settles at `tilt_err ≈ tau · ω_err`, not zero. With the "few rad/s" error the docstring cites (`tilt.py:3-4`), `tau=0.5` leaves ~0.5 rad ≈ 29° of standing tilt error. To hold 5° at 1 rad/s you need `tau ≈ 0.09 s`. The default `tau=0.5` (`tilt.py:50`, `tilt_check.py:108`) is probably on the wrong side of that, and `tau` is the only knob, so the entire result hinges on a parameter the A/B never sweeps. There is also no gyro-bias estimator, so that residual is permanent; the standard fix (an integral branch feeding a rate-bias estimate, restricted to the two observable axes — the body-frame increment at line 90 is already exactly that subspace) would remove it.
+
+## 2. "Yaw untouched by construction": true in one sense, false as written
+
+What is exactly true per step: `ax = z_ins × z_f` is perpendicular to `z_ins`, so the equivalent body-frame increment `R_insᵀ·ax` has zero z component. The correction injects **no rotation about the thrust axis** in any single step. That is the honest version of the claim.
+
+What is false is the stronger wording at `tilt.py:21-23` ("leaves the yaw exactly as the gyro integrated it", "cannot fabricate a heading that was never measured") and the comment at `tilt.py:98`:
+
+- **Euler yaw does change.** For ZYX Euler, `ψ̇ = (q sinφ + r cosφ)/cosθ`. The correction gives `r = 0` but generally `q ≠ 0`, so `ψ̇ = q sinφ/cosθ ≠ 0` whenever roll is nonzero. On a two-rotor-out vehicle roll is large, so heading moves every step.
+- **Accumulated heading drifts even in the frame-independent sense.** The minimal-rotation update is precisely parallel transport on the unit sphere (Levi-Civita connection on S²), and parallel transport is not holonomy-free: carrying the frame around a loop of enclosed solid angle `Ω` rotates it by `Ω` about the radial axis. So the heading difference between the two arms equals the solid angle enclosed between the corrected and uncorrected thrust-axis trajectories. That is second order in the tilt error, but the tilt errors here are tens of degrees, so it is not small — a 20°-half-angle wobble loop encloses 0.38 sr ≈ 22°.
+- **The controller is not yaw-insensitive anyway**, so the "unobservable, therefore harmless" framing does not hold. `tilt_check.py:83` feeds `R.T @ z_body`, where `z_body` is a world-frame desired thrust direction (`policy.py:80`). Projecting it through the *estimated* attitude means a heading error rotates the commanded tilt in body coordinates, mis-splitting it between roll and pitch. With rotors 2 and 3 dead the attainable torque set is body-fixed and strongly anisotropic, so that mis-split is a genuine control error, not a bookkeeping one.
+
+None of this is currently measured: the only metric is tilt (`tilt_check.py:90-91`). And the helper you would reach for is wrong — `AttitudeINS.yaw_error` (`ins.py:55-61`) computes `(trace(a)-1)/2`, which is the *total* angle error, duplicating `angle_error` (`ins.py:43-47`), not the rotation about the thrust axis its docstring claims. The correct quantity is `rotvec(R_trueᵀ R_est) · e_z`.
+
+## 3. Failure modes
+
+**Latch-up near inversion.** At `θ → 180°`, `z_f ≈ 0`, so `nz < 1e-9` (line 87) and `s < 1e-12` (line 93) both return `R_ins` uncorrected, and the axis is ill-conditioned just below that. A fully inverted INS is never recovered, which is the state the module most needs to fix.
+
+**`min_thrust=0.5` is far too permissive.** The measurement's direction error is `σ_⊥/|t|`; at `|t| = 0.5 m/s²`, a 0.5 m/s² perpendicular error is a 45° attitude measurement accepted as valid. This should scale with the actual acceleration noise (`|t| > k·σ_a`, `k≈10`), or better, weight `α` by `|t|/(|t|+c)` instead of hard-gating. A magnitude consistency check (`|t|` against the expected thrust) would also catch drag and derivative errors — but use `tom_from_command` (`priors.py:99`), not `env.thrust_over_mass`, which `review/opus_audit_2026-10-04.md:13` flags as privileged.
+
+**`vclip=200` m/s² equals a 1 m/s velocity step in one 5 ms tick** — exactly what ground contact produces. Rejecting is right, but it means `rejected` conflates "divergent run" with "touched the ground."
+
+**Drag makes the measurement biased, and this plant cannot show it.** `Physics("pyb")` (`tilt_check.py:43`) has no drag, so `t` is exactly `(T/M)R e_z`. On a real vehicle `t = (T/M)R e_z - D/m`, a systematic tilt bias of roughly `|D|/|T|` toward the velocity vector — velocity-correlated, so it feeds back through the position loop. The docstring concedes this (`tilt.py:25`) but the A/B presents the result as if it transfers.
+
+**Truth velocity is the load-bearing assumption.** `tilt_check.py:75` passes `env.vel[0]`, noiseless and unfiltered. The headline claim is "no new sensor," but a real outer loop supplies a filtered estimate whose bandwidth caps `tau` from below while the `tau·ω_err` residual caps it from above — those two constraints may not intersect. As written the A/B measures an information-theoretic ceiling, not a deployable filter.
+
+### What the A/B should report
+
+Make survival (`hold`) the primary endpoint, since death by attitude divergence is the documented failure mechanism, and raise `--seeds` well past the default 3 (`tilt_check.py:103`) to ~30 with per-seed paired deltas rather than two printed rows. The matched-pair design is otherwise done correctly: `identification` is called once per seed outside the arm loop (`tilt_check.py:113`), and the fault state and IMU seed are shared.
+
+Fix the censoring: the loop runs all 1500 steps regardless of `hold`, so `all` and `p90` (`tilt_check.py:98`) average free flight together with post-crash ground tumbling, where the observer rejects everything. Across arms with different `hold` times those two columns aren't comparable. Report tilt over `[0, min(hold_A, hold_B)]` per seed, and keep `first` (300 steps = 1.5 s, both arms almost certainly airborne) as the clean headline.
+
+Add a yaw-error column using a corrected `yaw_error`, so claim (2) is tested rather than asserted. Sweep `tau` over at least 0.05–1.0, since the `tau·ω_err` tradeoff means one value proves nothing. Add a degraded-velocity arm (noise `σ_v` and/or a first-order filter) and report benefit versus bandwidth — if it vanishes at realistic `σ_v`, the premise fails. Add a ceiling arm feeding `z_meas = R_true[:,2]` to separate "measurement is bad" from "blend is too slow."
+
+Finally, surface the diagnostics already being collected: `tilt_err_used` (`tilt.py:62,82`) is the innovation sequence and never printed — if it runs much larger than the tilt error being corrected, the measurement is at fault, not the INS. Split `n_rejected` by cause (`vclip` at lines 71-72 vs `min_thrust` at 76-77), and note that the first sample is counted in neither (lines 67-68), so `used + rejected = steps - 1`.

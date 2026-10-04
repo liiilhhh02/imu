@@ -310,3 +310,16 @@
 [13:02:29] ep   290 lam<=0.43 rew= -12.71 att=206.9deg buf=1000000 ep/s= 0.17 eta=0:17:00
 [13:02:36] ep   291 lam<=0.44 rew= -13.94 att=220.1deg buf=1000000 ep/s= 0.17 eta=0:16:54
 [13:02:42] ep   292 lam<=0.44 rew= -12.48 att=205.0deg buf=1000000 ep/s= 0.17 eta=0:16:48
+[13:02:48] ep   293 lam<=0.44 rew= -12.64 att=207.4deg buf=1000000 ep/s= 0.17 eta=0:16:42
+[13:02:54] ep   294 lam<=0.44 rew= -12.92 att=211.0deg buf=1000000 ep/s= 0.17 eta=0:16:36
+[13:03:00] ep   295 lam<=0.44 rew= -12.41 att=206.1deg buf=1000000 ep/s= 0.17 eta=0:16:30
+[13:03:07] ep   296 lam<=0.44 rew= -12.86 att=209.4deg buf=1000000 ep/s= 0.17 eta=0:16:23
+[13:03:13] ep   297 lam<=0.44 rew= -12.35 att=204.7deg buf=1000000 ep/s= 0.17 eta=0:16:17
+[13:03:20] ep   298 lam<=0.44 rew= -12.14 att=203.5deg buf=1000000 ep/s= 0.17 eta=0:16:10
+[13:03:26] ep   299 lam<=0.44 rew= -13.54 att=215.6deg buf=1000000 ep/s= 0.17 eta=0:16:04
+[13:03:32] ep   300 lam<=0.44 rew= -12.10 att=203.2deg buf=1000000 ep/s= 0.17 eta=0:15:58
+[13:03:46] EVAL ep   300 lam=0.00: held 4/4  z_med 0.73  att_med 21.2
+[13:03:46] EVAL ep   300 lam=0.50: held 4/4  z_med 0.49  att_med 22.1
+[13:03:46] EVAL ep   300 lam=1.00: held 3/4  z_med 0.32  att_med 24.6
+[13:03:52] ep   301 lam<=0.44 rew= -12.43 att=205.0deg buf=1000000 ep/s= 0.17 eta=0:15:38
+[13:03:59] ep   302 lam<=0.44 rew= -15.12 att=228.3deg buf=1000000 ep/s= 0.17 eta=0:15:31
