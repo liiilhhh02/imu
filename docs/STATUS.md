@@ -1,5 +1,8 @@
 # 实验记录（含负结果）
 
+> **整合版文档（当前有效结论，推荐先读）**：[`docs/ATTITUDE_ESTIMATION.md`](ATTITUDE_ESTIMATION.md)
+> —— 观测器链路 + 姿态估计器 + 有效实验结论 + 「**不得引用**」清单。本文（STATUS）是带时间戳的逐条工作记录。
+
 所有数字都是在 `/home/liiil/Downloads/me` 上实测得到。**带 ⚠️ 的行受评审 BLOCKER 影响，不可引用**
 （见 [`../review/CONSOLIDATED.md`](../review/CONSOLIDATED.md)）。
 
