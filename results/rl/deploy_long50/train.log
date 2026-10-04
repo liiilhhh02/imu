@@ -1,0 +1,1 @@
+[16:33:51] run=deploy_long50 estimator=results/e2e_v12.pt warm_start=shutdown_real_7_4 device=cuda anchor=0.5 ep_len=600 envs=8
