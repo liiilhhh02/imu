@@ -458,7 +458,12 @@ def main():
         ckpt = a.ckpt or os.path.join(ME, "results", "e2e_v9.pt")
         if not os.path.exists(ckpt):
             ckpt = os.path.join(ME, "results", "e2e_v8.pt")
-        netr = NetRate(ckpt, torch.device("cpu"), prior, a.dps, a.dt, mode=a.src)
+        # The estimator must fit inside one 5 ms simulated step or the loop cannot keep the design
+        # point: on this machine 6.3 ms on CPU vs 1.19 ms on GPU.  Running it on the CPU made the
+        # net rows pace at 65-75 Hz (a ~14 ms simulated step) -- measured with --substeps 5 pinned,
+        # so their numbers were not comparable to truth/clipped at ~190 Hz.
+        _dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        netr = NetRate(ckpt, _dev, prior, a.dps, a.dt, mode=a.src)
         print(f"[gz] src={a.src} ckpt={os.path.basename(ckpt)} compatible={netr.compat}")
 
     log = {k: [] for k in ("z", "xy", "wt", "wu", "rate", "att", "tilt")}
