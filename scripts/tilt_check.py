@@ -73,6 +73,7 @@ def fly(seed, steps, ckpt, dps, arm, tau, prior_pool, rl_name=None):
     last = -np.ones(4)
     tp = np.array([0.0, 0.0, 1.0])
     tilt_err, meas_err, hold = [], [], steps
+    R_hist, meas_err_d = [], []          # R_true history; measurement vs DELAYED truth
     for t in range(steps):
         env._computeObs()
         gyro, accel = env.gyro_meas.copy(), env.accel_meas.copy()
@@ -95,10 +96,21 @@ def fly(seed, steps, ckpt, dps, arm, tau, prior_pool, rl_name=None):
         env.target_a, env.target_z_body = float(ta), z_body
         env.step(act)
         R_true = quat_to_matrix(env.quat[0])
+        R_hist.append(R_true.copy())
         # the thrust axis is what the controller consumes; the heading is unobservable here
         c = float(np.clip(R[:, 2] @ R_true[:, 2], -1.0, 1.0))
         tilt_err.append(float(np.rad2deg(np.arccos(c))))
-        if tob is not None and tob.z_meas is not None:
+        if tob is not None and tob.z_meas is not None and t > 60:
+            # the actuator delay means the force felt during (t-1,t] was commanded ~delay ago: score
+            # the measurement against the truth at that earlier instant as well (this decides whether
+            # the residual measurement error is a *pure timestamp* problem -- which is fixable with the
+            # identified delay -- or a genuinely wrong measurement)
+            for d_steps in (0, 6, 12):
+                kk = t - d_steps
+                if kk >= 0 and kk < len(R_hist):
+                    cd = float(np.clip(tob.z_meas @ R_hist[kk][:, 2], -1.0, 1.0))
+                    if d_steps == 6:
+                        meas_err_d.append(float(np.rad2deg(np.arccos(cd))))
             # the *measurement's own* error: if this is not near zero the observer's premise is wrong
             # (or the plant has a force the derivation does not model), and that is the first thing to
             # check -- comparing two badly-flying arms against each other proves nothing.
@@ -111,9 +123,11 @@ def fly(seed, steps, ckpt, dps, arm, tau, prior_pool, rl_name=None):
     env.close()
     te = np.asarray(tilt_err)
     me = np.asarray(meas_err) if meas_err else np.asarray([float("nan")])
+    md = np.asarray(meas_err_d) if meas_err_d else np.asarray([float("nan")])
     return dict(first=float(te[:300].mean()), all=float(te.mean()), p90=float(np.percentile(te, 90)),
                 hold=hold, used=used, rejected=rej,
-                m_first=float(me[:300].mean()), m_p90=float(np.nanpercentile(me, 90)))
+                m_first=float(me[:300].mean()), m_p90=float(np.nanpercentile(me, 90)),
+                md_first=float(np.nanmean(md[:300])))
 
 
 def main():
@@ -129,7 +143,8 @@ def main():
     ap.add_argument("--rl_name", default=None)
     a = ap.parse_args()
     print(f"{'seed':>4} {'arm':>10} {'tilt<1.5s':>10} {'tilt_mean':>10} {'tilt_p90':>9} "
-          f"{'lost@':>6} {'used':>6} {'rej':>5} {'zmeas<1.5s':>11} {'zmeas_p90':>10}")
+          f"{'lost@':>6} {'used':>6} {'rej':>5} {'zmeas<1.5s':>11} {'zmeas_p90':>10} "
+          f"{'zmeas@-6st':>11}")
     for s in range(a.seeds):
         pool = identification(seed=s, dps=a.dps, flag=3)
         arms = ["ins", "oracle-att"] + ([f"tilt@{t}" for t in a.taus.split(",") if t]
@@ -139,7 +154,7 @@ def main():
             r = fly(s, a.steps, a.ckpt, a.dps, arm.split("@")[0], tau, pool, a.rl_name)
             print(f"{s:4d} {arm:>10} {r['first']:10.2f} {r['all']:10.2f} {r['p90']:9.2f} "
                   f"{r['hold']:6d} {r['used']:6d} {r['rejected']:5d} {r['m_first']:11.2f} "
-                  f"{r['m_p90']:10.2f}", flush=True)
+                  f"{r['m_p90']:10.2f} {r['md_first']:11.2f}", flush=True)
 
 
 if __name__ == "__main__":
