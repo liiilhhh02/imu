@@ -54,12 +54,19 @@ class TiltObserver:
     """
 
     def __init__(self, g: float = 9.8, tau: float = 0.05, vclip: float = 200.0,
-                 min_thrust: float = 0.05, thrust_c: float = 1.0):
+                 min_thrust: float = 0.05, thrust_c: float = 1.0, align_s: float | None = None):
         self.g = float(g)
         self.tau = float(tau)
         self.vclip = float(vclip)
         self.min_thrust = float(min_thrust)   # hard floor only; the weight below does the rest
         self.thrust_c = float(thrust_c)       # |t| scale over which the sample is trusted
+        # Total timestamp alignment applied to the measurement (seconds).  None = dt/2, the natural
+        # timestamp of a backward difference over (t-dt, t].  A controlled offset sweep
+        # (scripts/tilt_check.py --offsets) shows this plant's optimum is ~2 control steps = 10 ms,
+        # not 2.5 ms: the command path adds its own delay.  It is a pure timing constant, identifiable
+        # from logged flight data by the same sweep -- legitimate to calibrate, and NOT a free knob to
+        # tune against an acceptance metric.
+        self.align_s = None if align_s is None else float(align_s)
         self.reset()
 
     def reset(self):
@@ -99,7 +106,8 @@ class TiltObserver:
             w = np.asarray(omega, float).ravel()
             wn = float(np.linalg.norm(w))
             if wn > 1e-9:
-                th = wn * (0.5 * dt)
+                align = (0.5 * dt) if self.align_s is None else float(self.align_s)
+                th = wn * align
                 K = _skew(w / wn)
                 z_meas = (np.eye(3) + np.sin(th) * K + (1.0 - np.cos(th)) * (K @ K)) @ z_meas
         self.z_meas = z_meas

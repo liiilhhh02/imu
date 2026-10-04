@@ -1,0 +1,24 @@
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+[gz] spawn success=True
+[gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
+[gz] fault IC spin=[  1.022   0.36  -24.76 ] rad/s  set=True
+[gz] prior=[-7.340000e-03 -1.500000e-03 -2.300000e-04  1.158480e+00  4.828330e+00
+  3.371710e+00  1.745329e+01  2.612000e-02  7.420000e-03]
+[gz] fault IC spin=[  1.022   0.36  -24.76 ] rad/s  set=True
+[gz] src=net ckpt=e2e_v12.pt compatible=True
+Traceback (most recent call last):
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 555, in <module>
+    main()
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 500, in main
+    R = tob.correct(R, vel, a.dt, omega=rate)
+  File "/home/liiil/Downloads/me/gpd_me/tilt.py", line 109, in correct
+    align = (0.5 * dt) if self.align_s is None else float(self.align_s)
+AttributeError: 'TiltObserver' object has no attribute 'align_s'
+Exception in thread Thread-1 (spin):
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/threading.py", line 1016, in _bootstrap_inner
+    self.run()
+  File "/usr/lib/python3.10/threading.py", line 953, in run

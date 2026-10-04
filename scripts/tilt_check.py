@@ -32,6 +32,9 @@ from gpd_me.tilt import TiltObserver  # noqa: E402
 from e4_closed_loop import DT, LEVER, identification  # noqa: E402
 
 MASK = np.array([0.0, 0.0, 1.0, 1.0])
+OFFSETS = []
+OFF_ACC = {}
+ALIGN_S = None
 
 
 def fly(seed, steps, ckpt, dps, arm, tau, prior_pool, rl_name=None):
@@ -69,7 +72,7 @@ def fly(seed, steps, ckpt, dps, arm, tau, prior_pool, rl_name=None):
     policy = load_policy(rl_name or "shutdown_real_7_4")
     pid = PositionPID()
     ins = AttitudeINS(np.eye(3))
-    tob = TiltObserver(tau=tau) if use_tilt else None
+    tob = TiltObserver(tau=tau, align_s=ALIGN_S) if use_tilt else None
     last = -np.ones(4)
     tp = np.array([0.0, 0.0, 1.0])
     tilt_err, meas_err, hold = [], [], steps
@@ -111,6 +114,15 @@ def fly(seed, steps, ckpt, dps, arm, tau, prior_pool, rl_name=None):
                     cd = float(np.clip(tob.z_meas @ R_hist[kk][:, 2], -1.0, 1.0))
                     if d_steps == 6:
                         meas_err_d.append(float(np.rad2deg(np.arccos(cd))))
+            if OFFSETS:
+                # +k means the measurement is k steps EARLY relative to the current truth: score it
+                # against the truth k steps ahead, so a systematic timing error shows up as a minimum
+                # at a non-zero offset instead of a flat ~12 deg floor.
+                for kstep in OFFSETS:
+                    kk = t + kstep
+                    if 0 <= kk < len(R_hist):
+                        ck = float(np.clip(tob.z_meas @ R_hist[kk][:, 2], -1.0, 1.0))
+                        OFF_ACC.setdefault(kstep, []).append(float(np.rad2deg(np.arccos(ck))))
             # the *measurement's own* error: if this is not near zero the observer's premise is wrong
             # (or the plant has a force the derivation does not model), and that is the first thing to
             # check -- comparing two badly-flying arms against each other proves nothing.
@@ -141,7 +153,16 @@ def main():
                     help="comma-separated extra taus for the ins+tilt arm.  The failure is decided in "
                          "the first second, so the blend may have to be much faster than 0.5 s.")
     ap.add_argument("--rl_name", default=None)
+    ap.add_argument("--align_s", type=float, default=None,
+                    help="total measurement timestamp alignment (s); None = dt/2.  The offset sweep "
+                         "shows ~0.010 s for this plant.")
+    ap.add_argument("--offsets", default="",
+                    help="comma-separated sample offsets: score the measurement against the true thrust "
+                         "axis k control steps away, to separate a pure timing error from noise")
     a = ap.parse_args()
+    global OFFSETS, ALIGN_S
+    OFFSETS = [int(x) for x in a.offsets.split(",") if x]
+    ALIGN_S = a.align_s
     print(f"{'seed':>4} {'arm':>10} {'tilt<1.5s':>10} {'tilt_mean':>10} {'tilt_p90':>9} "
           f"{'lost@':>6} {'used':>6} {'rej':>5} {'zmeas<1.5s':>11} {'zmeas_p90':>10} "
           f"{'zmeas@-6st':>11}")
@@ -155,6 +176,12 @@ def main():
             print(f"{s:4d} {arm:>10} {r['first']:10.2f} {r['all']:10.2f} {r['p90']:9.2f} "
                   f"{r['hold']:6d} {r['used']:6d} {r['rejected']:5d} {r['m_first']:11.2f} "
                   f"{r['m_p90']:10.2f} {r['md_first']:11.2f}", flush=True)
+    if OFFSETS:
+        print("\nmeasurement error vs the truth k steps ahead (deg, mean over accepted samples):")
+        for kstep in sorted(OFF_ACC):
+            arr = np.asarray(OFF_ACC[kstep])
+            print(f"  offset {kstep:+d} steps: mean {arr.mean():6.2f}  (n={len(arr)}, first300 "
+                  f"{arr[:300].mean():6.2f})")
 
 
 if __name__ == "__main__":
