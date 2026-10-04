@@ -3,3 +3,7 @@
 [13:00:19] EVAL ep 0: truth 4/4  net 0/4
 [13:02:54] run=deploy_flag3_v2 estimator=results/e2e_v12.pt warm_start=shutdown_real_7_4 device=cuda anchor=0.3 ep_len=600 envs=8
 [13:03:49] identified 32+8 draws in 55s: k_med 0.006m k_range [0.001,0.013]
+[13:04:24] EVAL ep 0: truth 4/4  net 0/4
+[13:04:44] ep     1 z= 0.28 rew=-50.7065 tilt= 30.5 hold=501(min 167) k=[0.006  0.0105 0.0091 0.0108 0.0074 0.0015 0.0005 0.0073] upd=150 anchors=3/8 buf=4792 ep/s= 0.02 eta=4:59:06
+[13:05:02] ep     2 z= 8.64 rew=-106.4185 tilt= 49.7 hold=552(min 299) k=[0.006  0.0105 0.0091 0.0108 0.0074 0.0015 0.0005 0.0073] upd=150 anchors=3/8 buf=9584 ep/s= 0.03 eta=4:58:49
+[13:05:21] ep     3 z=12.72 rew=-103.8466 tilt= 40.0 hold=600(min 600) k=[0.006  0.0105 0.0091 0.0108 0.0074 0.0015 0.0005 0.0073] upd=150 anchors=3/8 buf=14376 ep/s= 0.03 eta=4:58:29
