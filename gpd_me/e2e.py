@@ -27,6 +27,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from .priors import tom_from_command
+
 WINDOW = 96                      # 480 ms at 200 Hz.  Was 48 (240 ms); the temporal model is the
 #                                 strong estimator here (it beats the true-k oracle), and under
 #                                 multi-axis saturation the spin *direction* is fixed in the body frame
@@ -186,6 +188,109 @@ def coarse_summary(gyro, sat, u_cmd, tom_hat, prior):
 
 
 # ----------------------------------------------------------------------------------------- the model
+DT = 1.0 / 200.0        # control period of the deployment loop (both sims)
+_WARNED: set = set()    # checkpoints whose incompatibility has already been announced
+
+
+class NetRate:
+    """Causal wrapper around the trained estimator: keeps a rolling window and returns w_hat."""
+
+    def __init__(self, ckpt, dev, prior, dps):
+        self.dev = dev
+        self.prior = np.asarray(prior, float)
+        # prior = [r(3), g_T, G, T, range_rad, tau, k]; the algebraic front end needs k = |r_perp|
+        self.g_T = float(self.prior[3]); self.tau = float(self.prior[7]); self.k = float(self.prior[8])
+        self.lim = np.deg2rad(dps)
+        ck = torch.load(ckpt, map_location=dev, weights_only=False)
+        # the checkpoint records the architecture (train_e2e saves `hidden`/`layers`); rebuild the same
+        # shape or `load_state_dict` fails on a v7/v8 checkpoint.  Old checkpoints carry no such keys.
+        ck_hidden, ck_layers = int(ck.get("hidden", 128)), int(ck.get("layers", 1))
+        self.net = E2ENet(hidden=ck_hidden, layers=ck_layers).to(dev).eval()
+        try:
+            self.net.load_state_dict(ck["state"])
+            self.compat = True
+            # the checkpoint stores numpy float64 normalisation constants -> cast, or the first
+            # Linear sees float64 and torch aborts with "mat1 and mat2 must have the same dtype"
+            self.xf_m = torch.tensor(ck["xf_m"], device=dev, dtype=torch.float32)
+            self.xf_s = torch.tensor(ck["xf_s"], device=dev, dtype=torch.float32)
+            self.xp_m = torch.tensor(ck["xp_m"], device=dev, dtype=torch.float32)
+            self.xp_s = torch.tensor(ck["xp_s"], device=dev, dtype=torch.float32)
+        except RuntimeError as exc:
+            # The checkpoint predates the current feature/prior layout (its fine vector is 26 wide
+            # with 7 priors; the current one is 28/9).  It cannot be loaded, so the residual heads
+            # stay at their zero init and w_hat reduces to the algebraic physics front end -- the
+            # network output is only valid again after retraining.  Kept loud, not silent.
+            self.compat = False
+            msg = next((ln.strip() for ln in str(exc).splitlines() if "size mismatch" in ln),
+                       str(exc).splitlines()[0].strip())
+            if ckpt not in _WARNED:
+                _WARNED.add(ckpt)
+                print(f"[e4] WARNING: {ckpt} was trained on the OLD 26-feature / 7-prior layout and "
+                      f"cannot be loaded ({msg}).  The 'net' row falls back to the algebraic "
+                      f"estimate; retrain to make it valid.")
+            F = fine_features(np.zeros((1, 3)), np.zeros((1, 3)), np.zeros((1, 3), bool),
+                              np.zeros((1, 4)), np.zeros(1), self.prior, np.zeros((1, 3))).shape[1]
+            self.xf_m = torch.zeros(F, device=dev); self.xf_s = torch.ones(F, device=dev)
+            self.xp_m = torch.zeros(len(self.prior), device=dev)
+            self.xp_s = torch.ones(len(self.prior), device=dev)
+        self.buf = {k: [] for k in ("a", "g", "u", "m")}
+
+    def step(self, accel, gyro, u_cmd, mask):
+        """One causal estimator step: returns w_hat for the current instant.
+
+        `u_cmd` is the *commanded* per-rotor thrust (N) this controller sent and `mask` the
+        per-sample alive-rotor mask; both feed the identified actuator model, so the specific thrust
+        the estimator uses is `tom_from_command(...)`, never the simulator's true thrust.
+        """
+        for key, val in (("a", accel), ("g", gyro), ("u", u_cmd), ("m", mask)):
+            self.buf[key].append(np.asarray(val, float))
+        H = min(WINDOW, len(self.buf["a"]))
+        pad = WINDOW - H
+        rep = lambda x: np.concatenate([np.repeat(x[:1], pad, 0), x], 0) if pad else x
+        a_ = rep(np.stack(self.buf["a"][-H:])); g_ = rep(np.stack(self.buf["g"][-H:]))
+        u_ = rep(np.stack(self.buf["u"][-H:])); m_ = rep(np.stack(self.buf["m"][-H:]))
+        sat_ = np.abs(g_) >= self.lim - 1e-9
+        tom_ = tom_from_command(u_, m_, DT, self.g_T, self.tau)
+        w_alg = algebraic_estimate(g_, a_ - np.array([0.0, 0.0, 1.0]) * tom_[:, None],
+                                   self.k, sat_, self.lim)
+        # coarse summary over the trailing 2 s (padded for the first samples)
+        Na = len(self.buf["a"]); Hc = min(400, Na); repc = lambda x: np.concatenate(
+            [np.repeat(x[:1], 400 - Hc, 0), x], 0) if 400 - Hc else x
+        cg = repc(np.stack(self.buf["g"][-Hc:])); cm = repc(np.stack(self.buf["m"][-Hc:]))
+        cu = repc(np.stack(self.buf["u"][-Hc:]))
+        ctom_ = tom_from_command(cu, cm, DT, self.g_T, self.tau)
+        cs = coarse_summary(cg, np.abs(cg) >= self.lim - 1e-9, cu, ctom_, self.prior)
+        T_ = lambda x: torch.tensor(np.asarray(x)[None], dtype=torch.float32, device=self.dev)
+        with torch.no_grad():
+            ft = ((T_(fine_features(a_, g_, sat_, u_, tom_, self.prior, w_alg)) - self.xf_m)
+                  / self.xf_s).clamp(-50, 50)
+            pt = (T_(self.prior) - self.xp_m) / self.xp_s
+            w_hat, _ = self.net(ft, T_(cs), pt, T_(w_alg), torch.tensor(sat_[None], device=self.dev))
+        return w_hat[0, -1].cpu().numpy().astype(float)
+
+
+def deploy_obs(rel, rate, ta, tom, last_action, mask):
+    """The observation the senior's policy actually receives at deployment.
+
+    Written once and shared by the fine-tuning rollout and the acceptance harness so the two cannot
+    drift apart field by field -- a silent mismatch here would make fine-tuning non-transferable and
+    would look like "the policy cannot learn".  Mirrors the inline construction in
+    ``scripts/e4_closed_loop.py`` (asserted bit-identical by ``scripts/test_deploy_obs.py``):
+
+        [ rel_x, rel_y | rate/10, rate/10, rate/50 | (ta-9.8)/3, (tom-9.8)/3
+          | last_action * mask | mask*2-1 ]
+
+    ``rel`` is the target body-z direction expressed in the *estimated* attitude, i.e.
+    ``R_hat.T @ z_body``; ``rate`` is whatever the estimator produced; ``tom`` is the measured
+    thrust-over-mass (the accelerometer's x sample), never a commanded or simulated quantity.
+    """
+    return np.array([rel[0], rel[1],
+                     rate[0] / 10.0, rate[1] / 10.0, rate[2] / 50.0,
+                     (ta - 9.8) / 3.0, (tom - 9.8) / 3.0,
+                     *(np.asarray(last_action, float).ravel() * mask),
+                     *(np.asarray(mask, float) * 2.0 - 1.0)], dtype=np.float32)
+
+
 class E2ENet(nn.Module):
     def __init__(self, fine_features: int = FINE_FEATURES, coarse: int = COARSE,
                  hidden: int = 128, n_prior: int = N_PRIOR, n_corr: int = N_CORR,

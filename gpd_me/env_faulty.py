@@ -119,7 +119,11 @@ class MetaAviaryFaulty(_ShutDown7):
         self._omega_at_sample = None
         self._imu_counter = -1
         self.omega_dot = np.zeros(3)
-        self.rate_override = None
+        # NOT None: reset() ends by calling _computeObs(), which with RATE_SOURCE='override'
+        # would raise immediately -- the override path was therefore impossible to reset into.
+        # Zero is a well-defined placeholder; any caller using 'override' writes it every step
+        # before the observation that matters.
+        self.rate_override = np.zeros(3)
         return self._computeObs()
 
     # ------------------------------------------------------------------ IMU plumbing

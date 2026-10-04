@@ -61,6 +61,7 @@ from scipy.spatial.transform import Rotation  # noqa: E402
 
 from gym_pybullet_drones.utils.enums import DroneModel, Physics  # noqa: E402
 from gpd_me.e2e import WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features  # noqa: E402
+from gpd_me.e2e import NetRate  # noqa: E402
 from gpd_me.env_faulty import MetaAviaryFaulty  # noqa: E402
 from gpd_me.imu import IMUConfig  # noqa: E402
 from gpd_me.ins import AttitudeINS  # noqa: E402
@@ -91,83 +92,6 @@ POST_FAULT_S = 1.5       # open-loop logging appended after the fault for identi
 #                          (this is where the gyro saturates, so the lever arm's |r_perp| becomes
 #                          identifiable; the healthy hover alone never saturates at >=1000 dps)
 _WARNED = set()          # checkpoints already reported as incompatible (loud once, not per run)
-
-
-class NetRate:
-    """Causal wrapper around the trained estimator: keeps a rolling window and returns w_hat."""
-
-    def __init__(self, ckpt, dev, prior, dps):
-        self.dev = dev
-        self.prior = np.asarray(prior, float)
-        # prior = [r(3), g_T, G, T, range_rad, tau, k]; the algebraic front end needs k = |r_perp|
-        self.g_T = float(self.prior[3]); self.tau = float(self.prior[7]); self.k = float(self.prior[8])
-        self.lim = np.deg2rad(dps)
-        ck = torch.load(ckpt, map_location=dev, weights_only=False)
-        # the checkpoint records the architecture (train_e2e saves `hidden`/`layers`); rebuild the same
-        # shape or `load_state_dict` fails on a v7/v8 checkpoint.  Old checkpoints carry no such keys.
-        ck_hidden, ck_layers = int(ck.get("hidden", 128)), int(ck.get("layers", 1))
-        self.net = E2ENet(hidden=ck_hidden, layers=ck_layers).to(dev).eval()
-        try:
-            self.net.load_state_dict(ck["state"])
-            self.compat = True
-            # the checkpoint stores numpy float64 normalisation constants -> cast, or the first
-            # Linear sees float64 and torch aborts with "mat1 and mat2 must have the same dtype"
-            self.xf_m = torch.tensor(ck["xf_m"], device=dev, dtype=torch.float32)
-            self.xf_s = torch.tensor(ck["xf_s"], device=dev, dtype=torch.float32)
-            self.xp_m = torch.tensor(ck["xp_m"], device=dev, dtype=torch.float32)
-            self.xp_s = torch.tensor(ck["xp_s"], device=dev, dtype=torch.float32)
-        except RuntimeError as exc:
-            # The checkpoint predates the current feature/prior layout (its fine vector is 26 wide
-            # with 7 priors; the current one is 28/9).  It cannot be loaded, so the residual heads
-            # stay at their zero init and w_hat reduces to the algebraic physics front end -- the
-            # network output is only valid again after retraining.  Kept loud, not silent.
-            self.compat = False
-            msg = next((ln.strip() for ln in str(exc).splitlines() if "size mismatch" in ln),
-                       str(exc).splitlines()[0].strip())
-            if ckpt not in _WARNED:
-                _WARNED.add(ckpt)
-                print(f"[e4] WARNING: {ckpt} was trained on the OLD 26-feature / 7-prior layout and "
-                      f"cannot be loaded ({msg}).  The 'net' row falls back to the algebraic "
-                      f"estimate; retrain to make it valid.")
-            F = fine_features(np.zeros((1, 3)), np.zeros((1, 3)), np.zeros((1, 3), bool),
-                              np.zeros((1, 4)), np.zeros(1), self.prior, np.zeros((1, 3))).shape[1]
-            self.xf_m = torch.zeros(F, device=dev); self.xf_s = torch.ones(F, device=dev)
-            self.xp_m = torch.zeros(len(self.prior), device=dev)
-            self.xp_s = torch.ones(len(self.prior), device=dev)
-        self.buf = {k: [] for k in ("a", "g", "u", "m")}
-
-    def step(self, accel, gyro, u_cmd, mask):
-        """One causal estimator step: returns w_hat for the current instant.
-
-        `u_cmd` is the *commanded* per-rotor thrust (N) this controller sent and `mask` the
-        per-sample alive-rotor mask; both feed the identified actuator model, so the specific thrust
-        the estimator uses is `tom_from_command(...)`, never the simulator's true thrust.
-        """
-        for key, val in (("a", accel), ("g", gyro), ("u", u_cmd), ("m", mask)):
-            self.buf[key].append(np.asarray(val, float))
-        H = min(WINDOW, len(self.buf["a"]))
-        pad = WINDOW - H
-        rep = lambda x: np.concatenate([np.repeat(x[:1], pad, 0), x], 0) if pad else x
-        a_ = rep(np.stack(self.buf["a"][-H:])); g_ = rep(np.stack(self.buf["g"][-H:]))
-        u_ = rep(np.stack(self.buf["u"][-H:])); m_ = rep(np.stack(self.buf["m"][-H:]))
-        sat_ = np.abs(g_) >= self.lim - 1e-9
-        tom_ = tom_from_command(u_, m_, DT, self.g_T, self.tau)
-        w_alg = algebraic_estimate(g_, a_ - np.array([0.0, 0.0, 1.0]) * tom_[:, None],
-                                   self.k, sat_, self.lim)
-        # coarse summary over the trailing 2 s (padded for the first samples)
-        Na = len(self.buf["a"]); Hc = min(400, Na); repc = lambda x: np.concatenate(
-            [np.repeat(x[:1], 400 - Hc, 0), x], 0) if 400 - Hc else x
-        cg = repc(np.stack(self.buf["g"][-Hc:])); cm = repc(np.stack(self.buf["m"][-Hc:]))
-        cu = repc(np.stack(self.buf["u"][-Hc:]))
-        ctom_ = tom_from_command(cu, cm, DT, self.g_T, self.tau)
-        cs = coarse_summary(cg, np.abs(cg) >= self.lim - 1e-9, cu, ctom_, self.prior)
-        T_ = lambda x: torch.tensor(np.asarray(x)[None], dtype=torch.float32, device=self.dev)
-        with torch.no_grad():
-            ft = ((T_(fine_features(a_, g_, sat_, u_, tom_, self.prior, w_alg)) - self.xf_m)
-                  / self.xf_s).clamp(-50, 50)
-            pt = (T_(self.prior) - self.xp_m) / self.xp_s
-            w_hat, _ = self.net(ft, T_(cs), pt, T_(w_alg), torch.tensor(sat_[None], device=self.dev))
-        return w_hat[0, -1].cpu().numpy().astype(float)
 
 
 def nominal_phase(env, steps=400, dps=1000.0, seed=0):
