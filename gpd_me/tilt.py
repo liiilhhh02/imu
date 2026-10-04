@@ -18,9 +18,15 @@ terms contaminate it -- that is exactly why the estimator exists), but the *iner
 because gravity is a known constant there.  No new sensor: velocity is already assumed by the
 outer PID (`RLControl.RLShutDownControl` consumes position and velocity).
 
-What it does NOT observe: rotation about the thrust axis (heading).  The filter therefore corrects
-only the z axis and leaves the yaw exactly as the gyro integrated it, so it cannot fabricate a
-heading that was never measured.
+What it does NOT observe: rotation about the thrust axis (heading).  Each step's update is a
+rotation about an axis perpendicular to z, so it injects no rotation *about* the thrust axis in that
+step.  Do NOT read that as "the heading is preserved": (a) Euler yaw still moves whenever roll is
+nonzero; (b) the update is parallel transport on the sphere, which is not holonomy-free -- carrying
+the frame around a closed loop rotates it by the enclosed solid angle; (c) the controller is not
+yaw-insensitive anyway, because a heading error mis-splits the commanded tilt between roll and pitch
+in body coordinates, and with two rotors dead the attainable torque set is body-fixed and strongly
+anisotropic.  The heading error must therefore be measured (`scripts/tilt_check.py` reports it), not
+assumed harmless.
 
 Caveats to state whenever this is used (all simulation-side here):
   * it assumes the rotor thrust is the only inertial force -- no aerodynamic drag in this plant;
@@ -47,18 +53,21 @@ class TiltObserver:
     produce enormous numerical derivatives that would otherwise whip the attitude).
     """
 
-    def __init__(self, g: float = 9.8, tau: float = 0.5, vclip: float = 200.0,
-                 min_thrust: float = 0.5):
+    def __init__(self, g: float = 9.8, tau: float = 0.05, vclip: float = 200.0,
+                 min_thrust: float = 0.05, thrust_c: float = 1.0):
         self.g = float(g)
         self.tau = float(tau)
         self.vclip = float(vclip)
-        self.min_thrust = float(min_thrust)
+        self.min_thrust = float(min_thrust)   # hard floor only; the weight below does the rest
+        self.thrust_c = float(thrust_c)       # |t| scale over which the sample is trusted
         self.reset()
 
     def reset(self):
         self.v_prev = None
         self.n_used = 0
         self.n_rejected = 0
+        self.n_rejected_vclip = 0
+        self.n_rejected_thrust = 0
         self.tilt_err_used = []      # |angle between the measurement and the INS's z|, radians
         self.z_meas = None           # last accepted measurement (world-frame thrust axis)
 
@@ -70,31 +79,44 @@ class TiltObserver:
         a_i = (v - self.v_prev) / dt
         self.v_prev = v.copy()
         if not np.all(np.isfinite(a_i)) or float(np.linalg.norm(a_i)) > self.vclip:
-            self.n_rejected += 1
+            self.n_rejected += 1     # either a divergent run or ground contact -- both unusable
+            self.n_rejected_vclip += 1
             return R_ins
         t = a_i + np.array([0.0, 0.0, self.g])
         n = float(np.linalg.norm(t))
         if n < self.min_thrust:          # thrust ~ 0 (free fall): no tilt information exists
             self.n_rejected += 1
+            self.n_rejected_thrust += 1
             return R_ins
         z_meas = t / n
         self.z_meas = z_meas
         R_ins = np.asarray(R_ins, float)
         z_ins = R_ins[:, 2]
-        self.tilt_err_used.append(float(np.arccos(np.clip(float(z_ins @ z_meas), -1.0, 1.0))))
+        ax = np.cross(z_ins, z_meas)
+        sj = float(np.linalg.norm(ax))
+        cj = float(np.clip(z_ins @ z_meas, -1.0, 1.0))
+        theta = float(np.arctan2(sj, cj))
+        self.tilt_err_used.append(theta)
         self.n_used += 1
-        alpha = dt / (self.tau + dt)
-        z_f = (1.0 - alpha) * z_ins + alpha * z_meas
-        nz = float(np.linalg.norm(z_f))
-        if nz < 1e-9:
-            return R_ins
-        z_f = z_f / nz
-        ax = np.cross(z_ins, z_f)
-        s = float(np.linalg.norm(ax))
-        c = float(np.clip(z_ins @ z_f, -1.0, 1.0))
-        if s < 1e-12:
-            return R_ins
-        K = _skew(ax / s)
-        th = float(np.arctan2(s, c))
-        R_world = np.eye(3) + np.sin(th) * K + (1.0 - c) * (K @ K)   # rotation about ax, world frame
-        return R_world @ R_ins                                       # yaw untouched by construction
+        # Rotate by alpha*theta in ANGLE space, not by normalising a vector blend.  A normalised
+        # linear blend moves the axis by atan2(a sin th, (1-a)+a cos th) ~ a*sin(th), so its gain
+        # collapses exactly where this module has to work: 0.64 at 90 deg, 0.19 at 150, 0.06 at 170,
+        # i.e. tau_eff degrades to ~8.5 s for an inverted INS (found by the opus review).
+        w = n / (n + self.thrust_c)          # down-weight weak/thrust-free samples instead of gating
+        step = (dt / (self.tau + dt)) * w * theta
+        if sj < 1e-9:
+            if cj >= 0.0:
+                return R_ins                       # already aligned
+            # antipodal: any perpendicular axis is a valid great circle.  The old code returned the
+            # attitude uncorrected here, so a fully inverted INS was never recovered -- the state this
+            # module exists to fix.
+            trial = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+            axis = trial[int(np.argmin(np.abs(z_ins)))]
+            ax = np.cross(z_ins, axis)
+            sj = float(np.linalg.norm(ax))
+            if sj < 1e-12:
+                return R_ins
+        ax = ax / sj
+        K = _skew(ax)
+        R_world = np.eye(3) + np.sin(step) * K + (1.0 - np.cos(step)) * (K @ K)
+        return R_world @ R_ins
