@@ -41,7 +41,6 @@ import torch  # noqa: E402
 from scipy.spatial.transform import Rotation  # noqa: E402
 
 from gym_pybullet_drones.algo.ACRL import ACRL  # noqa: E402
-from gym_pybullet_drones.control.RLAttitudeControl import RLControl  # noqa: E402
 from gym_pybullet_drones.utils.MetaBuffer import ReplayBuffer  # noqa: E402
 from gym_pybullet_drones.utils.enums import DroneModel, Physics  # noqa: E402
 
@@ -52,6 +51,7 @@ from gpd_me.ins import AttitudeINS  # noqa: E402
 from gpd_me.policy import ACRLArgs, load_policy  # noqa: E402
 
 from e4_closed_loop import DT, identification  # noqa: E402  (the deployment procedure, reused)
+from e4_closed_loop import LEVER as E4_LEVER  # noqa: E402  (identification measures against this one)
 
 MASK3 = np.array([0.0, 0.0, 1.0, 1.0])
 
@@ -63,7 +63,11 @@ def log(msg, path):
         fh.write(line + "\n")
 
 
-def make_env(dps, seed, lever=(0.013, 0.004, 0.002)):
+def make_env(dps, seed, lever=None):
+    # the lever arm that identification() measures against (scripts/e4_closed_loop.py).  Using a
+    # different one here (the old default was (0.013, 0.004, 0.002)) means training flies a
+    # vehicle the identified k = |r_perp| does not describe -- a silent train/eval mismatch.
+    lever = E4_LEVER if lever is None else lever
     """Training env: a faulty aviary whose IMU is the deployment IMU.
 
     ``rate_source``/``att_source`` are set to "truth" on purpose: this script builds the policy's
@@ -84,7 +88,7 @@ def make_env(dps, seed, lever=(0.013, 0.004, 0.002)):
 
 def draw_fault(env, seed, dps, prior_pool):
     """Apply one *real* fault draw: replay the RNG state captured by the identification procedure."""
-    prior, diag, fault_rng, ic, _pre = prior_pool
+    prior, diag, fault_rng, ic, pre = prior_pool
     np.random.set_state(fault_rng)
     env.shut_down_rotors(3)
     import pybullet as p
@@ -92,10 +96,10 @@ def draw_fault(env, seed, dps, prior_pool):
                                       physicsClientId=env.CLIENT)
     p.resetBaseVelocity(env.DRONE_IDS[0], ic[2].tolist(), ic[3].tolist(), physicsClientId=env.CLIENT)
     env._updateAndStoreKinematicInformation()
-    return prior, diag
+    return prior, diag, pre
 
 
-def episode(envs, nets, ins, pids, ctrls, policy, buffer, a, anchor_flags):
+def episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool):
     """One parallel episode over all training envs, on the deployment chain.
 
     Faithful to ``e4_closed_loop.run``: _computeObs -> read the IMU -> the estimator -> the INS ->
@@ -108,12 +112,19 @@ def episode(envs, nets, ins, pids, ctrls, policy, buffer, a, anchor_flags):
     """
     n = len(envs)
     last_action = [-np.ones(4) for _ in range(n)]
-    prev_obs = [None] * n
+    # `pending[i]` holds (obs_t, act_t, rew_t, done_t); the tuple is completed at the *next* iteration,
+    # where obs_batch is o_{t+1}.  The previous version pushed (obs_{t-1}, a_t, r_t, o_t), i.e. the
+    # action and reward one step ahead of the state they were paired with -- the critic then learns
+    # Q(o_{t-1}, a_t) and the fine-tune cannot work (found by the opus audit, fixed here).
+    pending = [None] * n
     rew_sum = 0.0
     for i, e in enumerate(envs):
-        ctrls[i].reset()
         pids[i].reset()
         ins[i] = AttitudeINS(np.eye(3))
+        nets[i].reset()                       # a new flight has no history (deployment starts empty)
+        if pre_pool[i] is not None and not anchor_flags[i]:
+            pr = pre_pool[i]                                          # dict: g/a/u/mask, pre-fault
+            nets[i].preseed(pr["g"][-96:], pr["a"][-96:], pr["u"][-96:], pr["mask"][-96:])
         e.target_a, e.target_z_body = 9.81, np.array([0.0, 0.0, 1.0])
         e._computeObs()
     for _ in range(a.len_episode):
@@ -130,10 +141,11 @@ def episode(envs, nets, ins, pids, ctrls, policy, buffer, a, anchor_flags):
             ins[i].update(rate, DT)
             R = ins[i].R
             raw = e._getDroneStateVector(0)                   # pos/vel only (see the module docstring)
-            ta, z_body = ctrls[i].RLShutDownControl(
-                control_timestep=e.TIMESTEP, cur_pos=raw[0:3],
-                cur_quat=Rotation.from_matrix(R).as_quat(), cur_vel=raw[10:13],
-                target_pos=np.array([0.0, 0.0, 1.0]))
+            # PositionPID, not RLControl: numerically equal today (same P/I/D, same integral clamp) but
+            # it is the object the acceptance harness actually flies, so there is one implementation
+            # rather than two that can drift (flagged by the opus audit).
+            ta, z_body = pids[i].step(DT, raw[0:3], Rotation.from_matrix(R).as_quat(),
+                                      raw[10:13], np.array([0.0, 0.0, 1.0]))
             r_xy = float(np.hypot(z_body[0], z_body[1]))
             if r_xy > 0.26:                                   # the harness's tilt clamp
                 s = 0.26 / r_xy
@@ -141,13 +153,22 @@ def episode(envs, nets, ins, pids, ctrls, policy, buffer, a, anchor_flags):
                                    np.sqrt(1 - (z_body[0] * s) ** 2 - (z_body[1] * s) ** 2)])
             obs_batch[i] = deploy_obs(R.T @ z_body, rate, ta, tom, last_action[i], e.shut_down)
             e.target_a, e.target_z_body = float(ta), z_body
+            if pending[i] is not None:          # finish the *previous* transition with o_t
+                o_prev, a_prev, r_prev, d_prev = pending[i]
+                buffer.add((o_prev, a_prev, r_prev, obs_batch[i], d_prev))
+                if a.verify_pairs and i == 0:
+                    # o_t carries the action applied at t-1 in dims 7:11 (masked), which must be the
+                    # action stored in this very tuple -- the direct test for the off-by-one the audit
+                    # found.  A cheap permanent guard, because this bug is silent.
+                    m = np.asarray(envs[i].shut_down, float)
+                    assert np.allclose(a_prev * m, obs_batch[i][7:11], atol=1e-6), \
+                        f"obs/action misalignment: {a_prev * m} vs {obs_batch[i][7:11]}"
+                pending[i] = None
         act = policy.select_action(obs_batch, deterministic=False)
-        prev_act = [np.asarray(x, dtype=float).ravel() for x in act]   # t's action
         for i, e in enumerate(envs):
-            _nxt_env_obs, rew, done, _ = e.step(act[i])       # discarded on purpose (see docstring)
-            if prev_obs[i] is not None:
-                buffer.add((prev_obs[i], prev_act[i], rew, obs_batch[i], float(done)))
-            prev_obs[i] = obs_batch[i].copy()
+            _nxt_env_obs, rew, done, _ = e.step(act[i])       # env's own obs: discarded (docstring)
+            pending[i] = (obs_batch[i].copy(), np.asarray(act[i], dtype=float).ravel(),
+                          rew, float(done))
             last_action[i] = np.asarray(act[i], dtype=float).ravel()
             rew_sum += float(np.mean(rew))
     zs = np.array([float(e.pos[0][2]) for e in envs])
@@ -175,6 +196,8 @@ def main():
                     help="episodes per (prior, fault-draw) pair before re-identifying")
     ap.add_argument("--pool", type=int, default=8,
                     help="identification runs to cycle through (the deployment procedure is slow)")
+    ap.add_argument("--verify_pairs", type=int, default=1,
+                    help="assert the replay-buffer action/next-obs alignment on the first tuples")
     ap.add_argument("--eval_every", type=int, default=50)
     ap.add_argument("--eval_draws", type=int, default=4)
     ap.add_argument("--eval_steps", type=int, default=1000)
@@ -197,6 +220,7 @@ def main():
     # --- the deployment procedure's first half, once per pool slot -------------------------------
     t_ident = time.time()
     pool = [identification(seed=a.seed + 100 * k, dps=a.dps, flag=3) for k in range(a.pool)]
+    pre_pool = [pool[i % a.pool][4] for i in range(a.num_env)]   # per env, not per pool slot
     # each pool entry is (prior, diag, fault_rng, ic, pre); `pre` is the measured pre-fault
     # history the estimator's window should start from (see NetRate.preseed)
     ks = [float(np.linalg.norm(p[0][:3])) for p in pool]
@@ -211,8 +235,7 @@ def main():
     policy.target_entropy = -2.0
 
     envs = [make_env(a.dps, a.seed + i) for i in range(a.num_env)]
-    ctrls = [RLControl(DroneModel.CF2X) for _ in range(a.num_env)]
-    nets = [NetRate(a.ckpt, dev, pool[i][0], a.dps) for i in range(a.num_env)]
+    nets = [NetRate(a.ckpt, dev, pool[i % a.pool][0], a.dps) for i in range(a.num_env)]
     ins = [AttitudeINS(np.eye(3)) for _ in range(a.num_env)]
     from gpd_me.policy import PositionPID  # noqa: E402  (local import: keeps the header short)
     pids = [PositionPID() for _ in range(a.num_env)]   # never share one: the integral term
@@ -225,11 +248,13 @@ def main():
         held = 0
         for k in range(draws):
             env = make_env(a.dps, a.seed + 5000 + k)
-            prior, diag = draw_fault(env, a.seed + 5000 + k, a.dps, pool[k % a.pool])
+            prior, diag, pre = draw_fault(env, a.seed + 5000 + k, a.dps, pool[k % a.pool])
             env._computeObs()
             net = NetRate(a.ckpt, dev, prior, a.dps)
+            if rate_mode == "net":      # same starting window as the training episodes and e4
+                net.preseed(pre["g"][-96:], pre["a"][-96:], pre["u"][-96:], pre["mask"][-96:])
             i_ins = AttitudeINS(np.eye(3))
-            ctrl = RLControl(DroneModel.CF2X)
+            ctrl = PositionPID()
             ctrl.reset()
             last = -np.ones(4)
             zs = []
@@ -242,9 +267,8 @@ def main():
                 i_ins.update(rate, DT)
                 R = i_ins.R
                 raw = env._getDroneStateVector(0)
-                ta, z_body = ctrl.RLShutDownControl(control_timestep=env.TIMESTEP, cur_pos=raw[0:3],
-                                                    cur_quat=Rotation.from_matrix(R).as_quat(),
-                                                    cur_vel=raw[10:13], target_pos=np.array([0., 0., 1.]))
+                ta, z_body = ctrl.step(DT, raw[0:3], Rotation.from_matrix(R).as_quat(),
+                                       raw[10:13], np.array([0.0, 0.0, 1.0]))
                 r_xy = float(np.hypot(z_body[0], z_body[1]))
                 if r_xy > 0.26:
                     s = 0.26 / r_xy
@@ -273,11 +297,12 @@ def main():
         anchor_flags = [bool(rng.random() < a.anchor) for _ in range(a.num_env)]
         for i, e in enumerate(envs):
             slot = (ep // a.setup_episodes + i) % a.pool
-            prior, diag = draw_fault(e, a.seed + 100 * slot, a.dps, pool[slot])
+            prior, diag, pre = draw_fault(e, a.seed + 100 * slot, a.dps, pool[slot])
+            pre_pool[i] = pre
             nets[i].prior = np.asarray(prior, float)
             nets[i].g_T = float(prior[3]); nets[i].tau = float(prior[7]); nets[i].k = float(prior[8])
             e._computeObs()
-        st = episode(envs, nets, ins, pids, ctrls, policy, buffer, a, anchor_flags)
+        st = episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool)
         for _ in range(4 if buffer.buffer_size >= a.batch else 0):
             policy.train(buffer, iterations=1)
         ep += 1

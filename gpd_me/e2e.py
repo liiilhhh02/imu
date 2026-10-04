@@ -235,6 +235,13 @@ class NetRate:
             self.xp_s = torch.ones(len(self.prior), device=dev)
         self.buf = {k: [] for k in ("a", "g", "u", "m")}
 
+    def reset(self):
+        """Empty the rolling window.  A new flight starts with no history; without this the
+        first WINDOW steps of every episode replay the *previous* episode's tail (and the
+        coarse summary silently becomes cross-episode), which is also an unbounded memory leak
+        over a multi-hour fine-tune."""
+        self.buf = {k: [] for k in ("a", "g", "u", "m")}
+
     def preseed(self, gyro, accel, u_cmd, mask):
         """Fill the rolling window with the real pre-fault samples.
 

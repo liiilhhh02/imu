@@ -44,3 +44,14 @@
 [12:25:51] ep    41 z=11.77 rew=  -0.18 anchors=2/8 buf=196472 ep/s= 0.06 eta=2:48:39
 [12:26:05] ep    42 z=14.90 rew=  -0.16 anchors=3/8 buf=201264 ep/s= 0.06 eta=2:48:25
 [12:26:21] ep    43 z=15.09 rew=  -0.15 anchors=2/8 buf=206056 ep/s= 0.06 eta=2:48:09
+[12:26:35] ep    44 z=14.76 rew=  -0.16 anchors=3/8 buf=210848 ep/s= 0.06 eta=2:47:55
+[12:26:51] ep    45 z=14.88 rew=  -0.16 anchors=2/8 buf=215640 ep/s= 0.06 eta=2:47:39
+[12:27:02] ep    46 z=15.29 rew=  -0.15 anchors=4/8 buf=220432 ep/s= 0.06 eta=2:47:28
+[12:27:18] ep    47 z=15.72 rew=  -0.16 anchors=2/8 buf=225224 ep/s= 0.06 eta=2:47:13
+[12:27:29] ep    48 z=14.02 rew=  -0.16 anchors=4/8 buf=230016 ep/s= 0.06 eta=2:47:02
+[12:27:50] ep    49 z=16.30 rew=  -0.18 anchors=0/8 buf=234808 ep/s= 0.06 eta=2:46:41
+[12:28:06] ep    50 z=16.32 rew=  -0.19 anchors=2/8 buf=239600 ep/s= 0.06 eta=2:46:25
+[12:28:27] EVAL ep    50: truth 3/4  net 0/4
+[12:28:38] ep    51 z=15.67 rew=  -0.16 anchors=4/8 buf=244392 ep/s= 0.06 eta=2:45:53
+[12:28:55] ep    52 z=15.97 rew=  -0.17 anchors=1/8 buf=249184 ep/s= 0.06 eta=2:45:35
+[12:29:11] ep    53 z=16.87 rew=  -0.17 anchors=2/8 buf=253976 ep/s= 0.06 eta=2:45:19

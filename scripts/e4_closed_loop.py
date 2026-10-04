@@ -133,12 +133,18 @@ def nominal_phase(env, steps=400, dps=1000.0, seed=0):
     return d
 
 
+# The IMU's lever arm, i.e. the vehicle the identification measures against.  Every consumer
+# (training included) must use THIS one, or the identified k = |r_perp| describes a
+# different vehicle (the opus audit caught exactly that mismatch).
+LEVER = (-0.012, -0.0055, 0.0)
+
+
 def make_env(dps):
     env = MetaAviaryFaulty(
         drone_model=DroneModel.CF2X, num_drones=1, initial_xyzs=np.array([[0.0, 0.0, 1.0]]),
         physics=Physics("pyb"), aggregate_phy_steps=1, freq=200, gui=False, record=False,
         obstacles=False, rate_source="truth",
-        imu_cfg=IMUConfig(gyro_range_dps=dps, lever_arm=(-0.012, -0.0055, 0.0),
+        imu_cfg=IMUConfig(gyro_range_dps=dps, lever_arm=LEVER,
                           gyro_noise_std=0.05, accel_noise_std=0.02))
     env.eval = False
     return env
