@@ -9,3 +9,4 @@ See the migration guide at https://gymnasium.farama.org/introduction/migration_g
   2.771890e+00  1.745329e+01  2.615000e-02  1.053000e-02]
 [gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
 [gz] src=net ckpt=e2e_v12.pt compatible=True
+RESULT gz flag=3 dps=1000 src=net: z_last=-462.54 (std 103.10) xy_last=1848.623 |w|=  38.3 rad/s wz= -29.98 sat= 100% rate_err= 11.55 att_last=134.6deg tilt_med= 89.3deg att_med= 97.9deg loop= 64.2Hz

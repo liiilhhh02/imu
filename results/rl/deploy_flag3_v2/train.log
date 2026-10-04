@@ -1,0 +1,1 @@
+[12:58:45] run=deploy_flag3_v2 estimator=results/e2e_v12.pt warm_start=shutdown_real_7_4 device=cuda anchor=0.3 ep_len=600 envs=8

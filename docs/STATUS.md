@@ -377,6 +377,25 @@ Wilcoxon，抽签真正独立）② 倾角观测器 ③ 把 dims 0-1 换成该�
 把测量与"6 步前（30 ms）"的真值推力轴比对反而更差（20.24° vs 与当前真值的 15.45°）
 ⇒ 测量与**当前**真值对齐最好，半步对齐方向正确，延迟不是残余误差的来源。
 
+## 5.14 高影响 bug：验收链路给策略喂了 2/15 维分布外输入（审计批评测试太弱而暴露）
+
+opus 审计顺带批评我的 `scripts/test_deploy_obs.py` 太弱：它只把我自己重打的公式与 `deploy_obs` 对比，
+**从不碰 `env._computeObs()`**，因此永远发现不了 harness 与环境约定的漂移。把此前一次性核对写成永久
+守卫 `scripts/test_obs_convention.py`（对比 `MetaAviaryFaulty._computeObs()` 本体）后，它**立刻失败**，
+差异 1.95，定位到 **dims 9/10**。
+
+根因在师兄原版 `gym_pybullet_drones/envs/MetaShutDown7.py:174`：
+
+    last_action = self.last_action[0] * self.shut_down      # 标量（第 0 个元素）乘掩码
+
+即他的约定是**把动作向量的第一个元素当标量广播过掩码**，而不是按元素掩码（他自己代码的 bug，
+但**已发布 checkpoint 正是在该分布上训练的**）。E4 与训练链路一直喂 `last_action[2], last_action[3]`，
+⇒ 策略 15 维输入里有 2 维长期分布外。
+
+修正后：`test_obs_convention` 报 **max|env - deploy_obs| = 0.000e+00**（除 dim 6 的一拍 T/M 差异，已按
+容差显式断言），`test_deploy_obs` 同步更新并通过。**教训**：对外部审计关于"测试强度"的批评要当真——
+它比被审计的代码本身更容易发现真问题。
+
 ## 6. 负结果（同样重要）
 
 1. **"1 桨失效 + 1000 dps"太温和**：两类控制器（RL 与 INDI）都不受影响 → 不能作为主实验。
