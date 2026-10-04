@@ -42,7 +42,7 @@ def fly(seed, steps, ckpt, dps, arm, tau, prior_pool, rl_name=None):
     where the INS does not, the attitude estimate -- not the rate error -- is the binding term, and
     the tilt observer is the right fix.  It reads the simulator's true attitude and can never ship.
     """
-    use_tilt = arm == "ins+tilt"
+    use_tilt = arm in ("ins+tilt", "tilt")     # "tilt@tau" sweeps arrive here as "tilt"
     oracle_att = arm == "oracle-att"
     prior, diag, fault_rng, ic, pre = prior_pool
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -132,7 +132,8 @@ def main():
           f"{'lost@':>6} {'used':>6} {'rej':>5} {'zmeas<1.5s':>11} {'zmeas_p90':>10}")
     for s in range(a.seeds):
         pool = identification(seed=s, dps=a.dps, flag=3)
-        arms = ["ins", "ins+tilt", "oracle-att"] + [f"tilt@{t}" for t in a.taus.split(",") if t]
+        arms = ["ins", "oracle-att"] + ([f"tilt@{t}" for t in a.taus.split(",") if t]
+                                        or ["ins+tilt"])
         for arm in arms:
             tau = float(arm.split("@")[1]) if "@" in arm else a.tau
             r = fly(s, a.steps, a.ckpt, a.dps, arm.split("@")[0], tau, pool, a.rl_name)
