@@ -62,6 +62,7 @@ sys.path[:0] = [REPO, ME]
 from gpd_me.e2e import WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features  # noqa: E402
 from gpd_me.imu import IMU, IMUConfig              # noqa: E402
 from gpd_me.ins import AttitudeINS                 # noqa: E402
+from gpd_me.tilt import TiltObserver               # noqa: E402
 from gpd_me.observer import LeverArmObserver       # noqa: E402
 from gpd_me.policy import (ActuatorLag, PositionPID, load_policy, mixer_body_wrench,  # noqa: E402
                            quat_to_matrix)
@@ -390,6 +391,9 @@ def main():
                     help="RNG seed for the random fault initial spin (default: fresh entropy)")
     pa.add_argument("--ckpt", default=None, help="trained e2e estimator checkpoint for --src net "
                                                   "(default results/e2e_v7.pt, else e2e_v8.pt)")
+    pa.add_argument("--tilt_obs", action="store_true",
+                    help="bound the INS drift with the acceleration-derived thrust axis")
+    pa.add_argument("--tilt_tau", type=float, default=0.05)
     pa.add_argument("--rl_ckpt", default=None, help="override the inner-loop policy checkpoint name")
     pa.add_argument("--rl_dir", default=None, help="directory that holds it (see e4_closed_loop.py)")
     pa.add_argument("--id_post", type=float, default=1.5,
@@ -437,6 +441,10 @@ def main():
     prior, _diag = n.identify(imu, lag)              # applies the fault IC internally
     n.apply_ic()                                     # re-apply it: identical start for every src
     ins = AttitudeINS(quat_to_matrix(n.state[1]))
+    # Optional: bound the INS drift with the thrust axis measured from inertial acceleration
+    # (gpd_me/tilt.py).  Gazebo feeds the *reported* velocity, which is quantised and noisier
+    # than the pybullet arm's, so this is also the deployability check for the observer.
+    tob = TiltObserver(tau=a.tilt_tau) if a.tilt_obs else None
     if a.src in ("net", "alg"):
         ckpt = a.ckpt or os.path.join(ME, "results", "e2e_v9.pt")
         if not os.path.exists(ckpt):
@@ -485,6 +493,8 @@ def main():
         # of the observation then come from the INS attitude, never the simulator's true attitude
         if ins is not None:
             R = ins.update(rate, a.dt)
+            if tob is not None:
+                R = tob.correct(R, vel, a.dt, omega=rate)
             q_att = Rotation.from_matrix(R).as_quat()
         else:
             R, q_att = R_true, quat
