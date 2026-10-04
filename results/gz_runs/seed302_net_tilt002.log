@@ -5,16 +5,16 @@ See the migration guide at https://gymnasium.farama.org/introduction/migration_g
 [gz] spawn success=True
 [gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
 [gz] fault IC spin=[  1.558   1.236 -25.997] rad/s  set=True
-[gz] prior=[-1.111000e-02 -5.040000e-03  3.500000e-04  1.028710e+00  7.174900e-01
-  8.554400e-01  3.490659e+01  2.609000e-02  1.180000e-02]
+[gz] prior=[-1.111000e-02 -5.030000e-03  3.100000e-04  1.024310e+00  7.638300e-01
+  8.562000e-01  3.490659e+01  2.609000e-02  1.179000e-02]
 [gz] fault IC spin=[  1.558   1.236 -25.997] rad/s  set=True
 [gz] src=net ckpt=e2e_v12.pt compatible=True
 Traceback (most recent call last):
-  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 559, in <module>
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 563, in <module>
     main()
-  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 516, in main
-    obs = build_obs(rel[:2], rate, target_a, tom, last_action * mask, mask)
-  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 369, in build_obs
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 520, in main
+    obs = build_obs(rel[:2], rate, target_a, tom, last_action, mask)
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 370, in build_obs
     return deploy_obs(np.asarray(rel_xy, float), rate, target_a, thrust_over_mass, last_action, mask)
 NameError: name 'deploy_obs' is not defined
 Exception in thread Thread-1 (spin):
@@ -28,8 +28,4 @@ Traceback (most recent call last):
   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 863, in spin_once
     self._spin_once_impl(timeout_sec)
   File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 855, in _spin_once_impl
-    self._executor.submit(handler)
-  File "/usr/lib/python3.10/concurrent/futures/thread.py", line 169, in submit
-    raise RuntimeError('cannot schedule new futures after '
-RuntimeError: cannot schedule new futures after interpreter shutdown
-sys:1: RuntimeWarning: coroutine 'Executor._make_handler.<locals>.handler' was never awaited
+    

@@ -59,7 +59,8 @@ REPO = "/home/liiil/Downloads/gym-pybullet-drones"
 ME = "/home/liiil/Downloads/me"
 sys.path[:0] = [REPO, ME]
 
-from gpd_me.e2e import WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features  # noqa: E402, deploy_obs
+from gpd_me.e2e import (WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features,  # noqa: E402
+                        deploy_obs)
 from gpd_me.imu import IMU, IMUConfig              # noqa: E402
 from gpd_me.ins import AttitudeINS                 # noqa: E402
 from gpd_me.tilt import TiltObserver               # noqa: E402

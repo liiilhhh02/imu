@@ -3,10 +3,33 @@ Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or conta
 Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
 See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
 [gz] spawn success=True
-[gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
+[gz] state rate 991 Hz -> substeps=5 (control at 198 Hz)
 [gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
-[gz] prior=[-1.075000e-02 -5.830000e-03  3.800000e-04  1.070590e+00  8.487900e-01
-  7.591100e-01  3.490659e+01  2.615000e-02  1.184000e-02]
+[gz] prior=[-1.079000e-02 -5.850000e-03  5.300000e-04  1.074850e+00  8.438800e-01
+  7.578700e-01  3.490659e+01  2.615000e-02  1.185000e-02]
 [gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
 [gz] src=net ckpt=e2e_v12.pt compatible=True
-RESULT gz flag=3 dps=2000 src=net: z_last=-2151.43 (std 307.19) xy_last=949.030 |w|=  38.0 rad/s wz= -29.82 sat=   4% rate_err=  4.39 att_last=137.0deg tilt_med= 98.0deg att_med=128.2deg loop= 59.5Hz
+Traceback (most recent call last):
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 563, in <module>
+    main()
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 520, in main
+    obs = build_obs(rel[:2], rate, target_a, tom, last_action, mask)
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 370, in build_obs
+    return deploy_obs(np.asarray(rel_xy, float), rate, target_a, thrust_over_mass, last_action, mask)
+NameError: name 'deploy_obs' is not defined
+Exception in thread Thread-1 (spin):
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/threading.py", line 1016, in _bootstrap_inner
+    self.run()
+  File "/usr/lib/python3.10/threading.py", line 953, in run
+    self._target(*self._args, **self._kwargs)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 323, in spin
+    self.spin_once()
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 863, in spin_once
+    self._spin_once_impl(timeout_sec)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 855, in _spin_once_impl
+    self._executor.submit(handler)
+  File "/usr/lib/python3.10/concurrent/futures/thread.py", line 167, in submit
+    raise RuntimeError('cannot schedule new futures after shutdown')
+RuntimeError: cannot schedule new futures after shutdown
+sys:1: RuntimeWarning: coroutine 'Executor._make_handler.<locals>.handler' was never awaited

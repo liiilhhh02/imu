@@ -3,9 +3,21 @@ Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or conta
 Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
 See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
 [gz] spawn success=True
-[gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
+[gz] state rate 996 Hz -> substeps=5 (control at 199 Hz)
 [gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
-[gz] prior=[-1.082000e-02 -5.790000e-03  5.000000e-04  1.078740e+00  8.456200e-01
-  7.590100e-01  3.490659e+01  2.615000e-02  1.186000e-02]
+[gz] prior=[-1.083000e-02 -5.790000e-03  3.900000e-04  1.067750e+00  8.380200e-01
+  7.554000e-01  3.490659e+01  2.615000e-02  1.188000e-02]
 [gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
-RESULT gz flag=3 dps=2000 src=truth: z_last=-658.54 (std 100.52) xy_last=334.262 |w|=  35.8 rad/s wz= -23.78 sat=  45% rate_err=  0.00 att_last=112.6deg tilt_med= 76.2deg att_med= 79.6deg loop=161.9Hz
+Traceback (most recent call last):
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 563, in <module>
+    main()
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 520, in main
+    obs = build_obs(rel[:2], rate, target_a, tom, last_action, mask)
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 370, in build_obs
+    return deploy_obs(np.asarray(rel_xy, float), rate, target_a, thrust_over_mass, last_action, mask)
+NameError: name 'deploy_obs' is not defined
+Exception in thread Thread-1 (spin):
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/threading.py", line 1016, in _bootstrap_inner
+    self.run()
+  File "/usr/lib/python3.10/threading.py", line 953, in run
