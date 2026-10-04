@@ -174,12 +174,14 @@ def episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool):
                 o_prev, a_prev, r_prev, d_prev = pending[i]
                 buffer.add((o_prev, a_prev, r_prev, obs_batch[i], d_prev))
                 if a.verify_pairs and i == 0:
-                    # o_t carries the action applied at t-1 in dims 7:11 (masked), which must be the
-                    # action stored in this very tuple -- the direct test for the off-by-one the audit
-                    # found.  A cheap permanent guard, because this bug is silent.
+                    # o_t carries the action applied at t-1 in dims 7:11, which must be the action
+                    # stored in this very tuple -- the direct test for the off-by-one the audit found.
+                    # The convention is the senior's (MetaShutDown7._computeObs:174): the FIRST element
+                    # of the action vector broadcast through the mask, not the element-wise product.
                     m = np.asarray(envs[i].shut_down, float)
-                    assert np.allclose(a_prev * m, obs_batch[i][7:11], atol=1e-6), \
-                        f"obs/action misalignment: {a_prev * m} vs {obs_batch[i][7:11]}"
+                    expect = float(np.asarray(a_prev).ravel()[0]) * m
+                    assert np.allclose(expect, obs_batch[i][7:11], atol=1e-6), \
+                        f"obs/action misalignment: {expect} vs {obs_batch[i][7:11]}"
                 pending[i] = None
         act = policy.select_action(obs_batch, deterministic=False)
         for i, e in enumerate(envs):
