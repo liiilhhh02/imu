@@ -66,7 +66,19 @@ def main():
     print(f"dim 6 (expected one-step T/M difference): {worst_dim6:.3e}  (tolerance 0.1)")
     assert worst_exact < 1e-5, f"observation convention drifted: {worst_exact}"
     assert worst_dim6 < 0.1, f"dim 6 differs by more than one step of thrust change: {worst_dim6}"
-    print("test_obs_convention: PASS (env convention == deploy_obs, one documented one-step dim 6)")
+    # --- path assertions (user code review item 1) -------------------------------------------
+    # `deploy_obs` was correct while BOTH closed-loop harnesses kept hand-assembling the 15-vector with
+    # an element-wise `last_action * mask`, and this test could not see it.  Assert the call sites too.
+    import pathlib as _pl
+    root = _pl.Path(__file__).resolve().parent.parent
+    for rel, pats in (("scripts/e4_closed_loop.py", ("last_action * env.shut_down",)),
+                      ("gazebo/gz_runner.py", ("last_action * mask",))):
+        src = (root / rel).read_text()
+        assert "deploy_obs" in src, f"{rel} does not use deploy_obs"
+        for pat in pats:
+            assert pat not in src, f"{rel} still hand-assembles the action dims ({pat!r})"
+    print("test_obs_convention: PASS (env convention == deploy_obs, and both closed-loop harnesses "
+          "go through deploy_obs; one documented one-step dim 6)")
 
 
 if __name__ == "__main__":

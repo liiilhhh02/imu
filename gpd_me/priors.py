@@ -439,7 +439,11 @@ def identify_priors(gyro, accel, u_cmd, omega_true, mask, dps, dt, vel=None, tom
         tau = TAU_DEFAULT
     thr = tom_from_command(u_cmd, mask_t, dt, g_T, tau)        # <- command + identified lag, not truth
     r, k, how = id_lever_arm(gyro, accel, thr, dt, lim, mask_t=mask_t, post_win=post_win)
-    G, T = id_yaw_channel(u_cmd, omega_true[:, 2], inr, dt, mask=mask_t)
+    # Fit the yaw channel on the MEASURED gyro restricted to in-range samples, not on omega_true:
+    # restricting to in-range samples already removes the saturation error, using the truth on top
+    # of that would silently delete the gyro noise and make 'all priors come from measurable'
+    # false for G and T (found by the user's code review).
+    G, T = id_yaw_channel(u_cmd, np.asarray(gyro)[:, 2], inr, dt, mask=mask_t)
     torque_ok = bool(np.isfinite(G) and np.isfinite(T) and G > 0 and T > 0 and
                      abs(T) < 1e3 and G < 1e4)
     diag.update(k=k, how=how, inr_frac=float(inr.mean()), g_T=g_T, G=G, T=T, tau=tau,

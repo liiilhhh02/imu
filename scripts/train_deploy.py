@@ -155,7 +155,7 @@ def episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool):
                 rate = nets[i].step(accel, gyro, u_cmd, e.shut_down)
             ins[i].update(rate, DT)
             if tobs is not None:                              # bound the INS drift (audit 5.2)
-                ins[i].R = tobs[i].correct(ins[i].R, e.vel[0], DT)
+                ins[i].R = tobs[i].correct(ins[i].R, e.vel[0], DT, omega=rate)
             R = ins[i].R
             raw = e._getDroneStateVector(0)                   # pos/vel only (see the module docstring)
             # PositionPID, not RLControl: numerically equal today (same P/I/D, same integral clamp) but
@@ -328,7 +328,7 @@ def main():
                                                                                   env.shut_down)
                 i_ins.update(rate, DT)
                 if tob is not None:                             # bound the INS drift (audit 5.2)
-                    i_ins.R = tob.correct(i_ins.R, env.vel[0], DT)
+                    i_ins.R = tob.correct(i_ins.R, env.vel[0], DT, omega=rate)
                 R = i_ins.R
                 raw = env._getDroneStateVector(0)
                 ta, z_body = ctrl.step(DT, raw[0:3], Rotation.from_matrix(R).as_quat(),

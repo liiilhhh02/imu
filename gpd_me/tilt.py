@@ -104,6 +104,12 @@ class TiltObserver:
             # the available rate estimate.  Over 2.5 ms even a 6.7 rad/s-wrong rate contributes <1 deg,
             # so this does not couple the observer to the drift it is correcting.
             w = np.asarray(omega, float).ravel()
+            # The thrust axis is BODY-FIXED, so its world-frame evolution rotates about the WORLD-frame
+            # angular velocity w_world = R_ins @ w_body.  Using the body rate directly (as this did until
+            # the user's review) is only right near level flight -- the very regime where the observer is
+            # not needed; at tens of degrees of tilt the axis is wrong, and the align_s calibrated level
+            # does not transfer.
+            w = np.asarray(R_ins, float) @ w
             wn = float(np.linalg.norm(w))
             if wn > 1e-9:
                 align = (0.5 * dt) if self.align_s is None else float(self.align_s)

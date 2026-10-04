@@ -162,13 +162,13 @@ def _one_episode_impl(job):
             z = float(env.pos[0][2])
             base = hover_u + 2.0 * (1.0 - z)
             if i == yid_tA:                                  # stage A finished -> read the yaw response
-                yid_w0 = float(env.omega_true[2])
+                yid_w0 = float(env.gyro_meas[2])
             if i < yid_tA:
                 yaw_exc = yid_d0
             else:
                 if yid_amp is None:                      # stage A done -> open-loop amplitude
                     dtA = max(i - yid_tA, 1) * dt
-                    gain = abs(float(env.omega_true[2]) - yid_w0) / max(abs(yid_d0) * dtA, 1e-6)
+                    gain = abs(float(env.gyro_meas[2]) - yid_w0) / max(abs(yid_d0) * dtA, 1e-6)
                     yid_amp = float(np.clip(yid_target / max(gain, 1e-3), 0.05, 3.0))
                 yaw_exc = yid_amp * np.sin(2 * np.pi * yid_f * (i - yid_tA) * dt)
             u_cmd = np.clip(np.array([base - yaw_exc, base + yaw_exc,
@@ -195,7 +195,7 @@ def _one_episode_impl(job):
             R_att = quat_to_matrix(q)
             rel = R_att.T @ z_body
             obs = np.array([rel[0], rel[1], env.omega_true[0] / 10, env.omega_true[1] / 10,
-                            env.omega_true[2] / 50, (ta - 9.8) / 3,
+                            env.gyro_meas[2] / 50, (ta - 9.8) / 3,
                             (env.thrust_over_mass - 9.8) / 3,
                             *(env.last_action[0] * mask), *(mask * 2 - 1)], dtype=np.float32)
             action = policy.select_action(obs, deterministic=True)

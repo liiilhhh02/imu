@@ -72,10 +72,8 @@ class AttitudeINS:
         z_e, z_t = R_est[:, 2], R_true[:, 2]
         return float(np.arccos(np.clip(float(z_e @ z_t), -1.0, 1.0)))
 
-    @staticmethod
-    def yaw_error(R_est: np.ndarray, R_true: np.ndarray) -> float:
-        """Rotation about the *true* thrust axis (the component a reduced-attitude controller ignores)."""
-        z = R_true[:, 2]
-        a = R_true.T @ R_est
-        c = (np.trace(a) - 1.0) / 2.0
-        return float(np.arccos(np.clip(c, -1.0, 1.0)))
+    # NOTE: a `yaw_error` helper used to live here.  It computed `(trace(R_true.T @ R_est) - 1)/2`,
+    # i.e. the *total* rotation angle -- duplicating `angle_error`, not the rotation about the thrust
+    # axis its docstring claimed.  Nothing in the repository called it (scripts/tilt_sweep.py computes
+    # the correct quantity, rotvec(R_true.T @ R_est) . e_z, inline), so it is deleted rather than
+    # re-pinned (user code review item 5).

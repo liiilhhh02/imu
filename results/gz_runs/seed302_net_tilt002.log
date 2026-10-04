@@ -5,8 +5,31 @@ See the migration guide at https://gymnasium.farama.org/introduction/migration_g
 [gz] spawn success=True
 [gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
 [gz] fault IC spin=[  1.558   1.236 -25.997] rad/s  set=True
-[gz] prior=[-1.252000e-02 -1.610000e-03 -4.060000e-03  1.025480e+00  4.032920e+00
-  2.806870e+00  1.745329e+01  2.609000e-02  1.267000e-02]
+[gz] prior=[-1.111000e-02 -5.040000e-03  3.500000e-04  1.028710e+00  7.174900e-01
+  8.554400e-01  3.490659e+01  2.609000e-02  1.180000e-02]
 [gz] fault IC spin=[  1.558   1.236 -25.997] rad/s  set=True
 [gz] src=net ckpt=e2e_v12.pt compatible=True
-RESULT gz flag=3 dps=1000 src=net: z_last=-5000.67 (std 686.75) xy_last=1296.537 |w|=  59.2 rad/s wz= -20.64 sat= 100% rate_err= 15.87 att_last= 84.1deg tilt_med= 72.7deg att_med= 79.7deg loop= 54.3Hz
+Traceback (most recent call last):
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 559, in <module>
+    main()
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 516, in main
+    obs = build_obs(rel[:2], rate, target_a, tom, last_action * mask, mask)
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 369, in build_obs
+    return deploy_obs(np.asarray(rel_xy, float), rate, target_a, thrust_over_mass, last_action, mask)
+NameError: name 'deploy_obs' is not defined
+Exception in thread Thread-1 (spin):
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/threading.py", line 1016, in _bootstrap_inner
+    self.run()
+  File "/usr/lib/python3.10/threading.py", line 953, in run
+    self._target(*self._args, **self._kwargs)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 323, in spin
+    self.spin_once()
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 863, in spin_once
+    self._spin_once_impl(timeout_sec)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 855, in _spin_once_impl
+    self._executor.submit(handler)
+  File "/usr/lib/python3.10/concurrent/futures/thread.py", line 169, in submit
+    raise RuntimeError('cannot schedule new futures after '
+RuntimeError: cannot schedule new futures after interpreter shutdown
+sys:1: RuntimeWarning: coroutine 'Executor._make_handler.<locals>.handler' was never awaited

@@ -232,6 +232,8 @@ def main():
     ap.add_argument("--ep_group", type=int, default=1,
                     help="windows per episode in a batch (K); >1 enables the cross-window bias term")
     ap.add_argument("--ep_bias", type=float, default=0.0, help="weight of the cross-window bias loss")
+    ap.add_argument("--use_slow", action="store_true",
+                    help="re-enable the parameter head (off by default: deployment ignores it)")
     ap.add_argument("--inband", type=float, default=0.0,
                     help="weight of the in-band ERROR loss (the closed-loop-relevant quantity)")
     # ---- step 3: ablation switches ----
@@ -283,11 +285,16 @@ def main():
         base = torch.zeros_like(B["w_alg"]) if a.mode == "noalg" else B["w_alg"]
         satm = torch.ones_like(B["sat"]) if a.mode == "residual" else B["sat"]
         w_hat, corr = net(fine, B["coarse"], (B["prior"] - xp_m_t) / xp_s_t, base, satm)
-        corr_eff = torch.zeros_like(corr) if (stage1 or a.no_slow) else corr
+        # The slow head is OFF by default: the deployment wrapper (gpd_me.e2e.NetRate.step) discards
+        # its output, so every loss that consumed it (L_phys, L_torque, L_prior) was optimising a
+        # quantity no flight ever sees -- training and deployment disagreed (user code review item 4).
+        # Its supervised term L_prior was also measured harmful (ablation) and rests on true r/g_T
+        # labels.  The head is kept in the architecture for checkpoint compatibility and can be
+        # re-enabled with --use_slow.
         # bounded corrections: the head may only nudge the identified priors (dr <= 2 cm,
         # g_T <= 50 %, G <= 5x, T <= 1 s).  A hard bound is better than the old soft anchor term,
         # which was identically zero by construction under the physics parameterisation.
-        c = torch.tanh(corr_eff)
+        c = torch.tanh(corr_eff) if getattr(a, 'use_slow', False) and not stage1 else torch.zeros_like(corr)
         r_id = B["prior"][:, :3] + 0.02 * c[:, :3]
         g_T = B["prior"][:, 3] + 0.5 * c[:, 3]
         G = B["prior"][:, 4] + 5.0 * c[:, 4]
@@ -358,7 +365,7 @@ def main():
         lo = ~him                                              # (B, F) low-frequency mask
         l_inband = (huber(edft * lo[:, :, None]).sum(1).mean(-1)).mean()
         l_prior = torch.zeros((), device=dev)
-        if not stage1:
+        if not stage1 and getattr(a, 'use_slow', False):
             l_prior = (huber(r_id - B["prior_t"][:, :3]).mean() / 0.02
                        + huber(g_T - B["prior_t"][:, 3]).mean())
         total = (l_rate + w("att", 0.5 * l_att) + w("phys", 0.3 * l_phys)

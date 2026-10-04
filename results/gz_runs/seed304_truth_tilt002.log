@@ -5,7 +5,25 @@ See the migration guide at https://gymnasium.farama.org/introduction/migration_g
 [gz] spawn success=True
 [gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
 [gz] fault IC spin=[  0.372   2.393 -24.766] rad/s  set=True
-[gz] prior=[-5.130000e-03 -2.960000e-03 -1.230000e-03  1.121030e+00  3.849610e+00
-  2.681620e+00  1.745329e+01  2.608000e-02  5.960000e-03]
+[gz] prior=[-1.075000e-02 -5.090000e-03  7.400000e-04  1.120550e+00  7.556800e-01
+  8.435900e-01  3.490659e+01  2.608000e-02  1.115000e-02]
 [gz] fault IC spin=[  0.372   2.393 -24.766] rad/s  set=True
-RESULT gz flag=3 dps=1000 src=truth: z_last=  -7.91 (std  7.45) xy_last=105.785 |w|=  37.9 rad/s wz= -32.25 sat= 100% rate_err=  0.00 att_last= 53.2deg tilt_med= 73.3deg att_med= 45.1deg loop=196.1Hz
+Traceback (most recent call last):
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 559, in <module>
+    main()
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 516, in main
+    obs = build_obs(rel[:2], rate, target_a, tom, last_action * mask, mask)
+  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 369, in build_obs
+    return deploy_obs(np.asarray(rel_xy, float), rate, target_a, thrust_over_mass, last_action, mask)
+NameError: name 'deploy_obs' is not defined
+Exception in thread Thread-1 (spin):
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/threading.py", line 1016, in _bootstrap_inner
+    self.run()
+  File "/usr/lib/python3.10/threading.py", line 953, in run
+    self._target(*self._args, **self._kwargs)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 323, in spin
+    self.spin_once()
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 863, in spin_once
+    self._spin_once_impl(timeout_sec)
+  File "/opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/executors.py", line 855, in _spin_once_impl

@@ -61,7 +61,8 @@ from scipy.spatial.transform import Rotation  # noqa: E402
 from scipy.stats import wilcoxon  # noqa: E402
 
 from gym_pybullet_drones.utils.enums import DroneModel, Physics  # noqa: E402
-from gpd_me.e2e import WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features  # noqa: E402
+from gpd_me.e2e import (WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features,  # noqa: E402
+                        deploy_obs)
 from gpd_me.e2e import NetRate  # noqa: E402
 from gpd_me.env_faulty import MetaAviaryFaulty  # noqa: E402
 from gpd_me.imu import IMUConfig  # noqa: E402
@@ -115,13 +116,13 @@ def nominal_phase(env, steps=400, dps=1000.0, seed=0):
         z = float(env.pos[0][2])
         base = hover_u + 2.0 * (1.0 - z)
         if i == yid_tA:
-            yid_w0 = float(env.omega_true[2])
+            yid_w0 = float(env.gyro_meas[2])      # measured gyro (unsaturated in the nominal phase)
         if i < yid_tA:
             exc = yid_d0
         else:
             if yid_amp is None:
                 dtA = max(i - yid_tA, 1) * dt
-                gain = abs(float(env.omega_true[2]) - yid_w0) / max(abs(yid_d0) * dtA, 1e-6)
+                gain = abs(float(env.gyro_meas[2]) - yid_w0) / max(abs(yid_d0) * dtA, 1e-6)
                 yid_amp = float(np.clip(yid_target / max(gain, 1e-3), 0.05, 3.0))
             exc = yid_amp * np.sin(2 * np.pi * yid_f * (i - yid_tA) * dt)
         u_cmd = np.clip(np.array([base - exc, base + exc, base - exc, base + exc]), 0.0, 15.0)
@@ -295,7 +296,7 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
         if tob is not None:
             # bound the INS's drift with the acceleration-derived thrust axis BEFORE the PID and
             # before the observation are built, for every src (uniform, so the A/B is clean)
-            ins.R = tob.correct(ins.R, env.vel[0], DT)
+            ins.R = tob.correct(ins.R, env.vel[0], DT, omega=rate)   # half-step alignment (frame-corrected)
         R = ins.R
         q_att = Rotation.from_matrix(R).as_quat()
         ta, z_body = pid.step(DT, env.pos[0], q_att, env.vel[0], tp)
@@ -305,10 +306,11 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
             z_body = np.array([z_body[0] * s, z_body[1] * s,
                                np.sqrt(1 - (z_body[0] * s) ** 2 - (z_body[1] * s) ** 2)])
         rel = R.T @ z_body
-        obs = np.array([rel[0], rel[1],
-                        rate[0] / 10, rate[1] / 10, rate[2] / 50,
-                        (ta - 9.8) / 3, (tom - 9.8) / 3,
-                        *(last_action * env.shut_down), *(env.shut_down * 2 - 1)], dtype=np.float32)
+        # ONE observation builder for every consumer (the senior's convention, dims 7:11 = 
+        # last_action[0] broadcast through the mask).  This line used to be a hand-written copy that
+        # kept the element-wise form long after gpd_me.e2e.deploy_obs was fixed -- found by the user's
+        # code review; scripts/test_obs_convention.py now also asserts these call sites.
+        obs = deploy_obs(rel, rate, ta, tom, last_action, env.shut_down)
         action = policy.select_action(obs, deterministic=True)
         last_action = np.asarray(action, dtype=float).ravel()
         env.target_a, env.target_z_body = float(ta), z_body

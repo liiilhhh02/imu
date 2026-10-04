@@ -59,7 +59,7 @@ REPO = "/home/liiil/Downloads/gym-pybullet-drones"
 ME = "/home/liiil/Downloads/me"
 sys.path[:0] = [REPO, ME]
 
-from gpd_me.e2e import WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features  # noqa: E402
+from gpd_me.e2e import WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features  # noqa: E402, deploy_obs
 from gpd_me.imu import IMU, IMUConfig              # noqa: E402
 from gpd_me.ins import AttitudeINS                 # noqa: E402
 from gpd_me.tilt import TiltObserver               # noqa: E402
@@ -360,10 +360,15 @@ class NetRate:
 
 
 def build_obs(rel_xy, rate, target_a, thrust_over_mass, last_action, mask):
-    return np.array([rel_xy[0], rel_xy[1],
-                     rate[0] / 10.0, rate[1] / 10.0, rate[2] / 50.0,
-                     (target_a - 9.8) / 3.0, (thrust_over_mass - 9.8) / 3.0,
-                     *last_action, *(mask * 2 - 1)], dtype=np.float32)
+    """Thin wrapper around the ONE observation builder (gpd_me.e2e.deploy_obs).
+
+    It used to hand-assemble the 15-vector element-wise (the action vector multiplied by the mask
+    per element) while the senior's
+    checkpoints were trained on ``last_action[0] * mask`` (MetaShutDown7.py:174) -- found by the user's
+    code review.  Keep the signature, delegate the content.
+    """
+    return deploy_obs(np.asarray(rel_xy, float), rate, target_a, thrust_over_mass, last_action, mask)
+
 
 
 def main():
@@ -509,7 +514,10 @@ def main():
                                np.sqrt(1 - (z_body[0] * s) ** 2 - (z_body[1] * s) ** 2)])
         rel = R.T @ z_body
         att = float(np.arccos(np.clip(float(np.dot(rel, np.array([0.0, 0.0, 1.0]))), -1.0, 1.0)))
-        obs = build_obs(rel[:2], rate, target_a, tom, last_action * mask, mask)
+        # pass the RAW action: build_obs -> deploy_obs applies the senior's broadcast convention
+        # (last_action[0] through the mask) internally.  Passing the pre-masked vector here was the
+        # second half of review item 1 and is what the extended test_obs_convention now catches.
+        obs = build_obs(rel[:2], rate, target_a, tom, last_action, mask)
         action = (policy.select_action(obs, deterministic=True) if policy is not None
                   else np.zeros(4))
         forces = np.clip((action + 1.0) * 7.5, 0.0, 15.0) * mask
