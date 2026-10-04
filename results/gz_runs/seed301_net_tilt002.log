@@ -5,18 +5,8 @@ See the migration guide at https://gymnasium.farama.org/introduction/migration_g
 [gz] spawn success=True
 [gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
 [gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
-[gz] prior=[-1.079000e-02 -5.800000e-03  4.200000e-04  1.078280e+00  8.404500e-01
-  7.603300e-01  3.490659e+01  2.615000e-02  1.185000e-02]
+[gz] prior=[-1.080000e-02 -5.780000e-03  4.800000e-04  1.074190e+00  8.417100e-01
+  7.595500e-01  3.490659e+01  2.615000e-02  1.184000e-02]
 [gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
 [gz] src=net ckpt=e2e_v12.pt compatible=True
-Traceback (most recent call last):
-  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 563, in <module>
-    main()
-  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 520, in main
-    obs = build_obs(rel[:2], rate, target_a, tom, last_action, mask)
-  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 370, in build_obs
-    return deploy_obs(np.asarray(rel_xy, float), rate, target_a, thrust_over_mass, last_action, mask)
-NameError: name 'deploy_obs' is not defined
-Exception in thread Thread-1 (spin):
-Traceback (most recent call last):
-  File "/usr/lib/python3.10/threading.py", line 1016, in _bootstrap_inner
+RESULT gz flag=3 dps=2000 src=net: z_last=-1688.97 (std 245.36) xy_last=1869.722 |w|=  39.1 rad/s wz= -33.96 sat=  25% rate_err=  2.11 att_last=154.8deg tilt_med= 75.2deg att_med=144.9deg loop= 73.9Hz

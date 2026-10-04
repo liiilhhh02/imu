@@ -3,21 +3,9 @@ Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or conta
 Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
 See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
 [gz] spawn success=True
-[gz] state rate 996 Hz -> substeps=5 (control at 199 Hz)
+[gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
 [gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
-[gz] prior=[-1.083000e-02 -5.790000e-03  3.900000e-04  1.067750e+00  8.380200e-01
-  7.554000e-01  3.490659e+01  2.615000e-02  1.188000e-02]
+[gz] prior=[-1.080000e-02 -5.780000e-03  4.800000e-04  1.074190e+00  8.416400e-01
+  7.596100e-01  3.490659e+01  2.615000e-02  1.184000e-02]
 [gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
-Traceback (most recent call last):
-  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 563, in <module>
-    main()
-  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 520, in main
-    obs = build_obs(rel[:2], rate, target_a, tom, last_action, mask)
-  File "/home/liiil/Downloads/me/gazebo/gz_runner.py", line 370, in build_obs
-    return deploy_obs(np.asarray(rel_xy, float), rate, target_a, thrust_over_mass, last_action, mask)
-NameError: name 'deploy_obs' is not defined
-Exception in thread Thread-1 (spin):
-Traceback (most recent call last):
-  File "/usr/lib/python3.10/threading.py", line 1016, in _bootstrap_inner
-    self.run()
-  File "/usr/lib/python3.10/threading.py", line 953, in run
+RESULT gz flag=3 dps=2000 src=truth: z_last=-248.13 (std 49.19) xy_last=320.325 |w|=  42.3 rad/s wz= -37.22 sat=  80% rate_err=  0.00 att_last= 87.2deg tilt_med= 77.3deg att_med= 62.7deg loop=187.6Hz
