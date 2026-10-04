@@ -416,7 +416,10 @@ def main():
     # Gazebo port must be able to fly whatever E4 just measured.
     policy = None
     if a.rl_ckpt or a.rl_dir or a.flag in CKPT:
-        policy = load_policy(a.rl_ckpt or CKPT.get(a.flag, "shutdown_real_7"), a.rl_dir)
+        name = a.rl_ckpt or CKPT.get(a.flag, "shutdown_real_7")
+        # `load_policy(name, None)` builds a path "None/<name>_actor.pth" and dies; the directory
+        # argument must be *omitted*, not passed as None (the same bug the E4 harness hit once).
+        policy = load_policy(name, a.rl_dir) if a.rl_dir else load_policy(name)
     pid = PositionPID(); lag = ActuatorLag(a.delay)
     imu = IMU(IMUConfig(gyro_range_dps=a.dps, lever_arm=LEVER_ARM,
                         gyro_noise_std=0.05, accel_noise_std=0.02))
