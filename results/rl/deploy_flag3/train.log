@@ -34,3 +34,13 @@
 [12:23:05] ep    31 z= 4.80 rew=  -0.16 anchors=1/8 buf=148552 ep/s= 0.06 eta=2:51:25
 [12:23:24] ep    32 z= 1.26 rew=  -0.17 anchors=1/8 buf=153344 ep/s= 0.06 eta=2:51:07
 [12:23:39] ep    33 z= 4.13 rew=  -0.17 anchors=2/8 buf=158136 ep/s= 0.06 eta=2:50:51
+[12:23:55] ep    34 z= 3.14 rew=  -0.17 anchors=2/8 buf=162928 ep/s= 0.06 eta=2:50:35
+[12:24:14] ep    35 z= 4.62 rew=  -0.16 anchors=1/8 buf=167720 ep/s= 0.06 eta=2:50:16
+[12:24:32] ep    36 z= 7.98 rew=  -0.15 anchors=1/8 buf=172512 ep/s= 0.06 eta=2:49:58
+[12:24:48] ep    37 z= 8.54 rew=  -0.17 anchors=2/8 buf=177304 ep/s= 0.06 eta=2:49:42
+[12:25:04] ep    38 z= 9.97 rew=  -0.16 anchors=2/8 buf=182096 ep/s= 0.06 eta=2:49:27
+[12:25:22] ep    39 z= 7.76 rew=  -0.18 anchors=1/8 buf=186888 ep/s= 0.06 eta=2:49:08
+[12:25:36] ep    40 z= 9.79 rew=  -0.16 anchors=3/8 buf=191680 ep/s= 0.06 eta=2:48:54
+[12:25:51] ep    41 z=11.77 rew=  -0.18 anchors=2/8 buf=196472 ep/s= 0.06 eta=2:48:39
+[12:26:05] ep    42 z=14.90 rew=  -0.16 anchors=3/8 buf=201264 ep/s= 0.06 eta=2:48:25
+[12:26:21] ep    43 z=15.09 rew=  -0.15 anchors=2/8 buf=206056 ep/s= 0.06 eta=2:48:09

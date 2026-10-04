@@ -14,6 +14,7 @@
 # The runner paces on /model_states with auto-detected --substeps, so the control interval is sim-locked.
 #
 # Usage:  bash scripts/gz_sweep.sh [first_seed] [last_seed] [out_csv]
+#         RL_ARGS="--rl_ckpt <name> --rl_dir <dir>" bash scripts/gz_sweep.sh ...   # new policy
 set -u
 cd "$(dirname "$0")/.."
 FIRST=${1:-300}; LAST=${2:-311}
@@ -28,7 +29,7 @@ run_one() {
     local line
     mkdir -p results/gz_runs
     local rlog="results/gz_runs/seed${seed}_${src}.log"
-    line=$(bash -c "source /opt/ros/humble/setup.bash; export PYTHONPATH=/opt/ros/humble/lib/python3.10/site-packages:/home/liiil/Downloads/gym-pybullet-drones:$PWD:\$PYTHONPATH; timeout 600 $PY gazebo/gz_runner.py --flag 3 --dps 1000 --steps 2000 --dt 0.005 --src $src --seed $seed" > "$rlog" 2>&1; grep '^RESULT gz' "$rlog" | tail -1)
+    line=$(bash -c "source /opt/ros/humble/setup.bash; export PYTHONPATH=/opt/ros/humble/lib/python3.10/site-packages:/home/liiil/Downloads/gym-pybullet-drones:$PWD:\$PYTHONPATH; timeout 600 $PY gazebo/gz_runner.py --flag 3 --dps 1000 --steps 2000 --dt 0.005 --src $src --seed $seed ${RL_ARGS:-}" > "$rlog" 2>&1; grep '^RESULT gz' "$rlog" | tail -1)
     if [ -z "$line" ]; then
         echo "$seed,$src,ERROR,,,,,,," >> "$OUT"
         echo "  seed=$seed src=$src ERROR -> $rlog"; tail -3 "$rlog" | sed 's/^/     /'
