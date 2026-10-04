@@ -19,6 +19,15 @@ the estimated attitude, the measured accelerometer, the *commanded* rotor thrust
 Never the true rate, attitude, lever arm or thrust.  Ground truth is used for the plant, for the
 reward and for the anchor's rate source -- all of which are simulation-only privileges.
 
+Eval draws are held out.  Training identification seeds are ``10000 + 100*k``; the in-loop
+``evaluate()`` uses a *separate* pool (``--eval_pool`` slots, seeds ``20000 + 100*k``) disjoint from
+both the training pool and the acceptance seeds ``0..11`` used by ``scripts/e4_closed_loop.py``, so
+the in-loop numbers are not measured on draws the policy trained on.
+
+``--tilt_obs`` mirrors ``scripts/e4_closed_loop.py``'s flag of the same name: after each INS update
+the thrust axis is blended toward the acceleration-derived measurement (``gpd_me.tilt.TiltObserver``)
+before the outer PID and ``deploy_obs``, so training can reproduce the acceptance chain's tilt fix.
+
 Usage (measured acceptance stays in e4_closed_loop.py, which already accepts --rl_dir/--rl_ckpt):
     $PY scripts/train_deploy.py --ckpt results/e2e_v12.pt --hours 3 --anchor 0.3
 """
@@ -48,7 +57,8 @@ from gpd_me.e2e import NetRate, deploy_obs  # noqa: E402
 from gpd_me.env_faulty import MetaAviaryFaulty  # noqa: E402
 from gpd_me.imu import IMUConfig  # noqa: E402
 from gpd_me.ins import AttitudeINS  # noqa: E402
-from gpd_me.policy import ACRLArgs, load_policy  # noqa: E402
+from gpd_me.policy import ACRLArgs, load_policy, quat_to_matrix  # noqa: E402
+from gpd_me.tilt import TiltObserver  # noqa: E402
 
 from e4_closed_loop import DT, identification  # noqa: E402  (the deployment procedure, reused)
 from e4_closed_loop import LEVER as E4_LEVER  # noqa: E402  (identification measures against this one)
@@ -118,6 +128,11 @@ def episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool):
     # Q(o_{t-1}, a_t) and the fine-tune cannot work (found by the opus audit, fixed here).
     pending = [None] * n
     rew_sum = 0.0
+    # hold[i]: first step (0-based; len_episode if never) at which env i's altitude drops below the
+    # acceptance threshold -- the same definition as e4_closed_loop.run's `hold_steps`.
+    hold = [a.len_episode] * n
+    # one tilt observer per env, reset at the start of every episode (constructor calls reset())
+    tobs = [TiltObserver(tau=a.tilt_tau) for _ in range(n)] if a.tilt_obs else None
     for i, e in enumerate(envs):
         pids[i].reset()
         ins[i] = AttitudeINS(np.eye(3))
@@ -127,7 +142,7 @@ def episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool):
             nets[i].preseed(pr["g"][-96:], pr["a"][-96:], pr["u"][-96:], pr["mask"][-96:])
         e.target_a, e.target_z_body = 9.81, np.array([0.0, 0.0, 1.0])
         e._computeObs()
-    for _ in range(a.len_episode):
+    for step_idx in range(a.len_episode):
         obs_batch = np.zeros((n, 15), dtype=np.float32)
         for i, e in enumerate(envs):
             e._computeObs()                                   # advances the IMU (fresh sample)
@@ -139,6 +154,8 @@ def episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool):
             else:
                 rate = nets[i].step(accel, gyro, u_cmd, e.shut_down)
             ins[i].update(rate, DT)
+            if tobs is not None:                              # bound the INS drift (audit 5.2)
+                ins[i].R = tobs[i].correct(ins[i].R, e.vel[0], DT)
             R = ins[i].R
             raw = e._getDroneStateVector(0)                   # pos/vel only (see the module docstring)
             # PositionPID, not RLControl: numerically equal today (same P/I/D, same integral clamp) but
@@ -167,13 +184,27 @@ def episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool):
         act = policy.select_action(obs_batch, deterministic=False)
         for i, e in enumerate(envs):
             _nxt_env_obs, rew, done, _ = e.step(act[i])       # env's own obs: discarded (docstring)
+            zz = float(e.pos[0][2])
+            # Altitude-hold shaping, applied to the reward that goes *into the replay buffer*.  The
+            # acceptance metric is z > 0.3 and std(z) < 3 (scripts/e4_closed_loop.py) while the
+            # inherited reward (MetaShutDown7._computeReward) has no altitude term at all, so a
+            # policy is free to climb its way out of trouble.  Shaping in simulation is legitimate:
+            # the policy never observes this term; only the plant and the reward may use ground truth.
+            rew = float(np.mean(rew)) + a.alt_w * (-abs(zz - 1.0))
             pending[i] = (obs_batch[i].copy(), np.asarray(act[i], dtype=float).ravel(),
                           rew, float(done))
             last_action[i] = np.asarray(act[i], dtype=float).ravel()
-            rew_sum += float(np.mean(rew))
+            rew_sum += rew
+            if hold[i] == a.len_episode and zz < 0.3:
+                hold[i] = step_idx
     zs = np.array([float(e.pos[0][2]) for e in envs])
-    return dict(z=float(zs.mean()), rew=rew_sum / a.len_episode,
-                anchors=int(sum(anchor_flags)))
+    # the TRUE tilt error: last INS attitude against the simulator's attitude (never env.att_rad_error,
+    # which lives in estimate space under att_source="truth" too).
+    tilt = float(np.mean([AttitudeINS.tilt_error(ins[i].R, quat_to_matrix(envs[i].quat[0]))
+                          for i in range(n)]))
+    ks = np.array([float(nets[i].k) for i in range(n)])   # prior[8] = |r_perp|, the k actually in use
+    return dict(z=float(zs.mean()), rew=rew_sum / a.len_episode, tilt=tilt,
+                hold=list(hold), k=ks, anchors=int(sum(anchor_flags)))
 
 
 def main():
@@ -192,6 +223,13 @@ def main():
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--anchor", type=float, default=0.3,
                     help="fraction of environments kept on the truth rate (anti-forgetting)")
+    ap.add_argument("--alt_w", type=float, default=0.5,
+                    help="weight of the altitude-hold shaping -|z - 1| added to the stored reward")
+    ap.add_argument("--tilt_obs", action="store_true",
+                    help="bound the INS's thrust-axis drift with gpd_me.tilt.TiltObserver "
+                         "(mirrors e4_closed_loop.py's --tilt_obs)")
+    ap.add_argument("--tilt_tau", type=float, default=0.5,
+                    help="TiltObserver blend time constant in seconds (only used with --tilt_obs)")
     ap.add_argument("--setup_episodes", type=int, default=40,
                     help="episodes per (prior, fault-draw) pair before re-identifying")
     ap.add_argument("--pool", type=int, default=8,
@@ -201,6 +239,9 @@ def main():
     ap.add_argument("--eval_every", type=int, default=50)
     ap.add_argument("--eval_draws", type=int, default=4)
     ap.add_argument("--eval_steps", type=int, default=1000)
+    ap.add_argument("--eval_pool", type=int, default=8,
+                    help="held-out identification draws for evaluate() (seeds 20000 + 100*k); "
+                         "disjoint from the training pool (10000 + 100*k) and acceptance seeds 0..11")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
 
@@ -219,13 +260,18 @@ def main():
 
     # --- the deployment procedure's first half, once per pool slot -------------------------------
     t_ident = time.time()
-    pool = [identification(seed=a.seed + 100 * k, dps=a.dps, flag=3) for k in range(a.pool)]
+    pool = [identification(seed=10000 + 100 * k, dps=a.dps, flag=3) for k in range(a.pool)]
+    # Held-out evaluation draws: their own seeds, disjoint from the training pool above *and* from
+    # the acceptance seeds 0..11 that e4_closed_loop.py uses, so in-loop numbers are not measured on
+    # draws the policy trained on (the opus audit's B6).
+    eval_pool = [identification(seed=20000 + 100 * k, dps=a.dps, flag=3)
+                 for k in range(a.eval_pool)]
     pre_pool = [pool[i % a.pool][4] for i in range(a.num_env)]   # per env, not per pool slot
     # each pool entry is (prior, diag, fault_rng, ic, pre); `pre` is the measured pre-fault
     # history the estimator's window should start from (see NetRate.preseed)
     ks = [float(np.linalg.norm(p[0][:3])) for p in pool]
-    log(f"identified {a.pool} draws in {time.time() - t_ident:.0f}s: k_med {np.median(ks):.3f}m "
-        f"k_range [{min(ks):.3f},{max(ks):.3f}]", logp)
+    log(f"identified {a.pool}+{a.eval_pool} draws in {time.time() - t_ident:.0f}s: "
+        f"k_med {np.median(ks):.3f}m k_range [{min(ks):.3f},{max(ks):.3f}]", logp)
 
     policy = ACRL(state_dim=15, action_dim=4, max_action=1, device=dev, args=ACRLArgs())
     policy.load(a.policy_in, a.fw_dir)
@@ -248,12 +294,14 @@ def main():
         held = 0
         for k in range(draws):
             env = make_env(a.dps, a.seed + 5000 + k)
-            prior, diag, pre = draw_fault(env, a.seed + 5000 + k, a.dps, pool[k % a.pool])
+            prior, diag, pre = draw_fault(env, 20000 + 100 * (k % a.eval_pool), a.dps,
+                                          eval_pool[k % a.eval_pool])
             env._computeObs()
             net = NetRate(a.ckpt, dev, prior, a.dps)
             if rate_mode == "net":      # same starting window as the training episodes and e4
                 net.preseed(pre["g"][-96:], pre["a"][-96:], pre["u"][-96:], pre["mask"][-96:])
             i_ins = AttitudeINS(np.eye(3))
+            tob = TiltObserver(tau=a.tilt_tau) if a.tilt_obs else None
             ctrl = PositionPID()
             ctrl.reset()
             last = -np.ones(4)
@@ -265,6 +313,8 @@ def main():
                 rate = env.omega_true.copy() if rate_mode == "truth" else net.step(accel, gyro, u_cmd,
                                                                                   env.shut_down)
                 i_ins.update(rate, DT)
+                if tob is not None:                             # bound the INS drift (audit 5.2)
+                    i_ins.R = tob.correct(i_ins.R, env.vel[0], DT)
                 R = i_ins.R
                 raw = env._getDroneStateVector(0)
                 ta, z_body = ctrl.step(DT, raw[0:3], Rotation.from_matrix(R).as_quat(),
@@ -297,17 +347,22 @@ def main():
         anchor_flags = [bool(rng.random() < a.anchor) for _ in range(a.num_env)]
         for i, e in enumerate(envs):
             slot = (ep // a.setup_episodes + i) % a.pool
-            prior, diag, pre = draw_fault(e, a.seed + 100 * slot, a.dps, pool[slot])
+            prior, diag, pre = draw_fault(e, 10000 + 100 * slot, a.dps, pool[slot])
             pre_pool[i] = pre
             nets[i].prior = np.asarray(prior, float)
             nets[i].g_T = float(prior[3]); nets[i].tau = float(prior[7]); nets[i].k = float(prior[8])
             e._computeObs()
         st = episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool)
-        for _ in range(4 if buffer.buffer_size >= a.batch else 0):
-            policy.train(buffer, iterations=1)
+        # B1: one gradient step per ~4 collected transitions (8 envs x 600 steps = 4800 per episode).
+        # The old loop did 4 steps per 4800 transitions -- 150x below train_robust.py's 1-per-step.
+        n_upd = a.len_episode // 4 if buffer.buffer_size >= a.batch else 0
+        if n_upd:
+            policy.train(buffer, iterations=n_upd)
         ep += 1
         el = time.time() - t0
-        log(f"ep {ep:5d} z={st['z']:5.2f} rew={st['rew'] / a.len_episode:7.2f} "
+        log(f"ep {ep:5d} z={st['z']:5.2f} rew={st['rew']:7.4f} tilt={np.rad2deg(st['tilt']):5.1f} "
+            f"hold={int(np.mean(st['hold']))}(min {int(np.min(st['hold']))}) "
+            f"k={np.array2string(st['k'], precision=4)} upd={n_upd} "
             f"anchors={st['anchors']}/{a.num_env} buf={buffer.buffer_size} ep/s={ep/el:5.2f} "
             f"eta={str(timedelta(seconds=int(max(0, deadline - time.time()))))}", logp)
         if ep % a.eval_every == 0:

@@ -34,7 +34,16 @@ from e4_closed_loop import DT, LEVER, identification  # noqa: E402
 MASK = np.array([0.0, 0.0, 1.0, 1.0])
 
 
-def fly(seed, steps, ckpt, dps, use_tilt, tau, prior_pool, rl_name=None):
+def fly(seed, steps, ckpt, dps, arm, tau, prior_pool, rl_name=None):
+    """arm: "ins" (the current chain), "ins+tilt" (the audit's fix) or
+    "oracle-att" (DIAGNOSTIC ONLY, not deployable: the true attitude with the estimator's rate).
+
+    The third arm is the ablation that decides how the failure splits: if the oracle attitude holds
+    where the INS does not, the attitude estimate -- not the rate error -- is the binding term, and
+    the tilt observer is the right fix.  It reads the simulator's true attitude and can never ship.
+    """
+    use_tilt = arm == "ins+tilt"
+    oracle_att = arm == "oracle-att"
     prior, diag, fault_rng, ic, pre = prior_pool
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = MetaAviaryFaulty(
@@ -63,7 +72,7 @@ def fly(seed, steps, ckpt, dps, use_tilt, tau, prior_pool, rl_name=None):
     tob = TiltObserver(tau=tau) if use_tilt else None
     last = -np.ones(4)
     tp = np.array([0.0, 0.0, 1.0])
-    tilt_err, hold = [], steps
+    tilt_err, meas_err, hold = [], [], steps
     for t in range(steps):
         env._computeObs()
         gyro, accel = env.gyro_meas.copy(), env.accel_meas.copy()
@@ -73,7 +82,7 @@ def fly(seed, steps, ckpt, dps, use_tilt, tau, prior_pool, rl_name=None):
         ins.update(rate, DT)
         if tob is not None:
             ins.R = tob.correct(ins.R, env.vel[0], DT)
-        R = ins.R
+        R = quat_to_matrix(env.quat[0]) if oracle_att else ins.R
         ta, z_body = pid.step(DT, env.pos[0], Rotation.from_matrix(R).as_quat(), env.vel[0], tp)
         r_xy = float(np.hypot(z_body[0], z_body[1]))
         if r_xy > 0.26:
@@ -89,14 +98,22 @@ def fly(seed, steps, ckpt, dps, use_tilt, tau, prior_pool, rl_name=None):
         # the thrust axis is what the controller consumes; the heading is unobservable here
         c = float(np.clip(R[:, 2] @ R_true[:, 2], -1.0, 1.0))
         tilt_err.append(float(np.rad2deg(np.arccos(c))))
+        if tob is not None and tob.z_meas is not None:
+            # the *measurement's own* error: if this is not near zero the observer's premise is wrong
+            # (or the plant has a force the derivation does not model), and that is the first thing to
+            # check -- comparing two badly-flying arms against each other proves nothing.
+            cm = float(np.clip(tob.z_meas @ R_true[:, 2], -1.0, 1.0))
+            meas_err.append(float(np.rad2deg(np.arccos(cm))))
         if hold == steps and env.pos[0][2] < 0.3:
             hold = t
     used = tob.n_used if tob is not None else 0
     rej = tob.n_rejected if tob is not None else 0
     env.close()
     te = np.asarray(tilt_err)
+    me = np.asarray(meas_err) if meas_err else np.asarray([float("nan")])
     return dict(first=float(te[:300].mean()), all=float(te.mean()), p90=float(np.percentile(te, 90)),
-                hold=hold, used=used, rejected=rej)
+                hold=hold, used=used, rejected=rej,
+                m_first=float(me[:300].mean()), m_p90=float(np.nanpercentile(me, 90)))
 
 
 def main():
@@ -106,16 +123,21 @@ def main():
     ap.add_argument("--ckpt", default=os.path.join(ME, "results", "e2e_v12.pt"))
     ap.add_argument("--dps", type=float, default=1000.0)
     ap.add_argument("--tau", type=float, default=0.5)
+    ap.add_argument("--taus", default="",
+                    help="comma-separated extra taus for the ins+tilt arm (the failure is decided\n                         "in the first second, so the blend may have to be much faster than 0.5 s)")
     ap.add_argument("--rl_name", default=None)
     a = ap.parse_args()
     print(f"{'seed':>4} {'arm':>10} {'tilt<1.5s':>10} {'tilt_mean':>10} {'tilt_p90':>9} "
-          f"{'lost@':>6} {'used':>6} {'rej':>5}")
+          f"{'lost@':>6} {'used':>6} {'rej':>5} {'zmeas<1.5s':>11} {'zmeas_p90':>10}")
     for s in range(a.seeds):
         pool = identification(seed=s, dps=a.dps, flag=3)
-        for arm, use in (("ins", False), ("ins+tilt", True)):
-            r = fly(s, a.steps, a.ckpt, a.dps, use, a.tau, pool, a.rl_name)
+        arms = ["ins", "ins+tilt", "oracle-att"] + [f"tilt@{t}" for t in a.taus.split(",") if t]
+        for arm in arms:
+            tau = float(arm.split("@")[1]) if "@" in arm else a.tau
+            r = fly(s, a.steps, a.ckpt, a.dps, arm.split("@")[0], tau, pool, a.rl_name)
             print(f"{s:4d} {arm:>10} {r['first']:10.2f} {r['all']:10.2f} {r['p90']:9.2f} "
-                  f"{r['hold']:6d} {r['used']:6d} {r['rejected']:5d}", flush=True)
+                  f"{r['hold']:6d} {r['used']:6d} {r['rejected']:5d} {r['m_first']:11.2f} "
+                  f"{r['m_p90']:10.2f}", flush=True)
 
 
 if __name__ == "__main__":

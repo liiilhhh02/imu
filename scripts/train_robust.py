@@ -42,8 +42,10 @@ for _p in (REPO, ME):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import pybullet as p  # noqa: E402
 import torch  # noqa: E402
 
+from e4_closed_loop import LEVER as E4_LEVER  # noqa: E402  (the lever arm identification() measures against)
 from gym_pybullet_drones.algo.ACRL import ACRL  # noqa: E402
 from gym_pybullet_drones.control.RLAttitudeControl import RLControl  # noqa: E402
 from gym_pybullet_drones.utils.MetaBuffer import ReplayBuffer  # noqa: E402
@@ -66,6 +68,44 @@ def log(msg, path):
         fh.write(line + "\n")
 
 
+def true_att_rad_error(env):
+    """Angle between the TRUE body-z and the commanded target body-z.
+
+    Exactly the formula the environment uses for its attitude term
+    (``MetaShutDown7.py::_computeObs``: ``rel_z_body = R_true.T @ target_z_body``,
+    ``arccos(rel_z_body[2])``), with ``R_true`` from ``env.quat[0]`` and the clip that
+    ``gpd_me/env_faulty.py::_computeObs`` applies to the same quantity.
+    """
+    rot_body = np.array(p.getMatrixFromQuaternion(np.asarray(env.quat[0], float))).reshape(3, 3)
+    rel_z_body = rot_body.T @ np.asarray(env.target_z_body, float)
+    return float(np.arccos(np.clip(rel_z_body[2], -1.0, 1.0)))
+
+
+def install_true_attitude_reward(env):
+    """AUDIT HYPOTHESIS UNDER TEST (review/opus_audit_2026-10-04.md §3c + B12).
+
+    With ``att_source="ins"``, ``gpd_me/env_faulty.py::_computeObs`` *overwrites*
+    ``env.att_rad_error`` with the INS-based angle, and ``MetaBaseAviary4.step`` calls
+    ``_computeObs()`` immediately *before* ``_computeReward()``.  The attitude reward is
+    therefore paid in estimate space: the policy collects for making the *estimate* look
+    level while the real vehicle flips.  The audit's hypothesis is that this reward leak --
+    not the corruption model -- is why the four synthetic-corruption recipes failed.
+
+    We do not edit ``gpd_me/``; instead we wrap this env *instance* so the attitude reward
+    is computed from the TRUE attitude (``env.quat[0]``) while everything else is untouched.
+    This is the only place ground truth is allowed to reach: the plant and the reward --
+    never the observation, whose dims 0:2 still come from the INS.
+    """
+    orig_reward = env._computeReward
+
+    def _reward_with_true_attitude():
+        env.att_rad_error = true_att_rad_error(env)
+        return orig_reward()
+
+    env._computeReward = _reward_with_true_attitude
+    return env
+
+
 def make_env(freq, dps, level, seed, fault=True):
     cfg = {k: v * float(level) for k, v in CORRUPT_FULL.items()}
     env = MetaAviaryFaulty(
@@ -74,13 +114,16 @@ def make_env(freq, dps, level, seed, fault=True):
         obstacles=False,
         rate_source="truth" if level <= 0.0 else "corrupt",
         att_source="ins",
-        imu_cfg=IMUConfig(gyro_range_dps=dps, lever_arm=(0.013, 0.004, 0.002), seed=seed),
+        # the lever arm identification() measures against (scripts/e4_closed_loop.py:139).  The old
+        # (0.013, 0.004, 0.002) here meant training flew a vehicle the identified k = |r_perp|
+        # does not describe -- a silent train/eval mismatch (audit B3).
+        imu_cfg=IMUConfig(gyro_range_dps=dps, lever_arm=E4_LEVER, seed=seed),
         corrupt_cfg=(cfg if level > 0.0 else None))
     env.eval = False
     env.reset()
     if fault:
         env.shut_down_rotors(3)
-    return env
+    return install_true_attitude_reward(env)
 
 
 def rollout(env, policy, ctrl, steps, deterministic, target=(0.0, 0.0, 1.0), rng=None,
@@ -212,11 +255,13 @@ def main():
             e.RATE_SOURCE = "truth" if lam <= 0.0 else "corrupt"
             e.shut_down_rotors(3)
             ctrls[i].reset()
-        obs_prev = [e._computeObs() for e in envs]
         ep_rew, ep_att = 0.0, 0.0
         for _ in range(a.len_episode):
-            obs_batch = np.stack([e._computeObs() for e in envs])
-            act = policy.select_action(obs_batch, deterministic=False)
+            # B12 (audit §B12): build the action's observation AFTER the supervisor has written this
+            # step's `target_a`/`target_z_body`; obs dims 0, 1 and 5 are functions of those targets.
+            # The previous version selected the action from an observation built one step earlier
+            # (and then recomputed `obs_batch[i]` and threw it away), so those dims lagged both the
+            # action they conditioned and this file's own eval path (`rollout`) / deployment.
             for i, e in enumerate(envs):
                 raw = e._getDroneStateVector(0)
                 ta, tz = ctrls[i].RLShutDownControl(control_timestep=e.TIMESTEP, cur_pos=raw[0:3],
@@ -228,10 +273,13 @@ def main():
                     tz = np.array([tz[0] * s, tz[1] * s,
                                    np.sqrt(1 - (tz[0] * s) ** 2 - (tz[1] * s) ** 2)])
                 e.target_a, e.target_z_body = float(ta), tz
-                obs_batch[i] = e._computeObs()
+            obs_batch = np.stack([e._computeObs() for e in envs])
+            act = policy.select_action(obs_batch, deterministic=False)
+            for i, e in enumerate(envs):
                 nxt, rew, done, _ = e.step(act[i])
-                buffer.add((obs_prev[i], act[i], rew, nxt, float(done)))
-                obs_prev[i] = nxt
+                # (s_t, a_t, r_t, s_{t+1}) with s_t the observation the action was actually
+                # selected from -- consistent with the B12 fix above.
+                buffer.add((obs_batch[i], act[i], rew, nxt, float(done)))
                 ep_rew += float(np.mean(rew))
                 ep_att += float(np.rad2deg(e.att_rad_error))
             if buffer.buffer_size >= a.batch:

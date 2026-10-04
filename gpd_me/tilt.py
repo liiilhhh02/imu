@@ -60,6 +60,7 @@ class TiltObserver:
         self.n_used = 0
         self.n_rejected = 0
         self.tilt_err_used = []      # |angle between the measurement and the INS's z|, radians
+        self.z_meas = None           # last accepted measurement (world-frame thrust axis)
 
     def correct(self, R_ins: np.ndarray, vel: np.ndarray, dt: float) -> np.ndarray:
         v = np.asarray(vel, float).ravel()
@@ -77,6 +78,7 @@ class TiltObserver:
             self.n_rejected += 1
             return R_ins
         z_meas = t / n
+        self.z_meas = z_meas
         R_ins = np.asarray(R_ins, float)
         z_ins = R_ins[:, 2]
         self.tilt_err_used.append(float(np.arccos(np.clip(float(z_ins @ z_meas), -1.0, 1.0))))

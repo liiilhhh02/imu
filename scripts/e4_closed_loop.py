@@ -58,6 +58,7 @@ for _p in (REPO, ME):
 import pybullet as p  # noqa: E402
 import torch  # noqa: E402
 from scipy.spatial.transform import Rotation  # noqa: E402
+from scipy.stats import wilcoxon  # noqa: E402
 
 from gym_pybullet_drones.utils.enums import DroneModel, Physics  # noqa: E402
 from gpd_me.e2e import WINDOW, E2ENet, algebraic_estimate, coarse_summary, fine_features  # noqa: E402
@@ -67,6 +68,7 @@ from gpd_me.imu import IMUConfig  # noqa: E402
 from gpd_me.ins import AttitudeINS  # noqa: E402
 from gpd_me.policy import PositionPID, load_policy, quat_to_matrix  # noqa: E402
 from gpd_me.priors import identify_priors, tom_from_command  # noqa: E402
+from gpd_me.tilt import TiltObserver  # noqa: E402
 
 MASK = {0: [0, 1, 1, 1], 3: [0, 0, 1, 1]}
 CKPT_RL = {0: "shutdown_real_7", 3: "shutdown_real_7_4"}
@@ -84,9 +86,9 @@ PN_RNG = np.random.default_rng(0)
 # Causal one-pole low-pass on the NETWORK estimate (fc in Hz, 0 = off).  The proper 480 ms spectrum
 # (docs/STATUS.md 4.2) shows 54.5 % of the network error power above 10 Hz and 22.2 % above 20 Hz,
 # while the true rate has only 1.8 % above 20 Hz -- i.e. a large part of the error IS filterable.
-# The filter state is seeded from the first sample so there is no start-up transient.
+# The filter state is seeded from the first sample of each flight (a local in `run`, never
+# carried over), so there is no start-up transient and no leakage between flights.
 NET_LP = 0.0
-NET_LP_STATE = None
 DT = 1.0 / 200.0
 POST_FAULT_S = 1.5       # open-loop logging appended after the fault for identification (seconds)
 #                          (this is where the gyro saturates, so the lever arm's |r_perp| becomes
@@ -139,13 +141,15 @@ def nominal_phase(env, steps=400, dps=1000.0, seed=0):
 LEVER = (-0.012, -0.0055, 0.0)
 
 
-def make_env(dps):
+def make_env(dps, seed=0):
+    """`seed` is the fault draw's seed: it seeds the IMU's noise RNG, so the N draws have
+    independent sensor-noise realisations (B11) instead of replaying `IMUConfig(seed=0)`."""
     env = MetaAviaryFaulty(
         drone_model=DroneModel.CF2X, num_drones=1, initial_xyzs=np.array([[0.0, 0.0, 1.0]]),
         physics=Physics("pyb"), aggregate_phy_steps=1, freq=200, gui=False, record=False,
         obstacles=False, rate_source="truth",
         imu_cfg=IMUConfig(gyro_range_dps=dps, lever_arm=LEVER,
-                          gyro_noise_std=0.05, accel_noise_std=0.02))
+                          gyro_noise_std=0.05, accel_noise_std=0.02, seed=int(seed)))
     env.eval = False
     return env
 
@@ -197,7 +201,7 @@ def identification(seed=0, dps=1000.0, flag=3, post_s=None):
     """
     post_s = POST_FAULT_S if post_s is None else post_s
     np.random.seed(seed)
-    env = make_env(dps)
+    env = make_env(dps, seed)
     env.reset()
     env.shut_down = np.ones(4)                       # healthy for the identification phase
     d = nominal_phase(env, steps=int(3.0 / DT), dps=dps, seed=seed)   # was 1.6 s: give the two-stage
@@ -222,7 +226,8 @@ def identification(seed=0, dps=1000.0, flag=3, post_s=None):
 
 
 def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.0, 1.0),
-        prior=None, diag=None, fault_rng=None, ic=None, pre=None, preseed=True):
+        prior=None, diag=None, fault_rng=None, ic=None, pre=None, preseed=True,
+        tilt_obs=False, tilt_tau=0.5):
     """One closed-loop flight.  `prior`/`fault_rng`/`ic` come from `identification`, so several
     `src` values can be flown from the *same* fault draw (paired); calling with `prior=None`
     performs the identification and the fault draw itself.
@@ -230,7 +235,7 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
     if prior is None:
         prior, diag, fault_rng, ic, pre = identification(seed=seed, dps=dps, flag=flag)
     np.random.seed(seed)
-    env = make_env(dps)
+    env = make_env(dps, seed)
     env.reset()
     np.random.set_state(fault_rng)                   # the env's own fault injection, same draw
     env.shut_down_rotors(flag)
@@ -256,9 +261,11 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
               else load_policy(RL_NAME or CKPT_RL[flag]))
     pid = PositionPID()
     ins = AttitudeINS(quat_to_matrix(env.quat[0]))
+    tob = TiltObserver(tau=tilt_tau) if tilt_obs else None   # one observer per flight (stateful)
     tp = np.array([0.0, 0.0, target[1]])
     z, xy, thr_e, err_n = [], [], [], []
     last_action = -np.ones(4)
+    lp_state = None                                  # one-pole filter state for `--net_lp`
     for _ in range(steps):
         env._computeObs()
         gyro, accel, tom = env.gyro_meas.copy(), env.accel_meas.copy(), env.thrust_over_mass
@@ -271,8 +278,24 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
         elif src == "clipped":
             rate = gyro
         else:
-            rate = net.step(accel, gyro, u_cmd, env.shut_down)
+            w_hat = net.step(accel, gyro, u_cmd, env.shut_down)
+            if NET_LP > 0:
+                # B7: the causal one-pole low-pass on the network estimate.  `a = exp(-2*pi*fc*DT)`
+                # is the pole of the equivalent RC filter; the state is seeded from this flight's
+                # FIRST sample (so no start-up transient) and is used for the INS, the PID and the
+                # observation alike -- exactly what `--net_lp` was meant to test.
+                if lp_state is None:
+                    lp_state = np.asarray(w_hat, float).copy()
+                a_lp = np.exp(-2.0 * np.pi * NET_LP * DT)
+                lp_state = a_lp * lp_state + (1.0 - a_lp) * np.asarray(w_hat, float)
+                rate = lp_state.copy()
+            else:
+                rate = w_hat
         ins.update(rate, DT)
+        if tob is not None:
+            # bound the INS's drift with the acceleration-derived thrust axis BEFORE the PID and
+            # before the observation are built, for every src (uniform, so the A/B is clean)
+            ins.R = tob.correct(ins.R, env.vel[0], DT)
         R = ins.R
         q_att = Rotation.from_matrix(R).as_quat()
         ta, z_body = pid.step(DT, env.pos[0], q_att, env.vel[0], tp)
@@ -305,7 +328,12 @@ def run(flag=3, dps=1000.0, src="net", ckpt=None, seed=0, steps=2000, target=(0.
                 rate_err_early=float(np.mean(err_n[:300])),
                 tilt_early=float(np.mean(thr_e[:300])),
                 hold_steps=int(next((i for i, zz in enumerate(z) if zz < 0.3), len(z))),
-                k=float(np.linalg.norm(prior[:3])), diag=diag,
+                # B8: the algebraic front end uses prior[8] = |r_perp| (gpd_me/e2e.py:202), NOT
+                # ||prior[:3]||.  Report the k actually in use (`k_perp`, which `--k_override`
+                # writes) alongside the lever-arm norm it was being confused with.
+                k_perp=float(prior[8]), k_hat_norm=float(np.linalg.norm(prior[:3])), diag=diag,
+                tilt_used=(tob.n_used if tob is not None else None),
+                tilt_rejected=(tob.n_rejected if tob is not None else None),
                 net_compat=getattr(net, "compat", None))
 
 
@@ -322,7 +350,8 @@ def summarize(rows):
                 z_iqr=float(np.percentile(zs, 75) - np.percentile(zs, 25)) if held else float("nan"),
                 tilt=float(np.mean([r["tilt"] for r in held])) if held else float("nan"),
                 rate_err=float(np.mean([r["rate_err"] for r in held])) if held else float("nan"),
-                k=float(np.mean([r["k"] for r in rows])))
+                k_perp=float(np.mean([r["k_perp"] for r in rows])),
+                k_hat_norm=float(np.mean([r["k_hat_norm"] for r in rows])))
 
 
 def main():
@@ -354,14 +383,24 @@ def main():
                     help="tolerance probe: white noise std added to the TRUE rate [rad/s]")
     ap.add_argument("--net_lp", type=float, default=0.0,
                     help="causal low-pass cutoff [Hz] applied to the net estimate (0 = off)")
+    ap.add_argument("--wilcoxon", type=int, default=0,
+                    help="0 = off.  With N > 0, run N extra paired fault draws and print, per src "
+                         "pair, the median of hold_steps(src) - hold_steps(truth) and the Wilcoxon "
+                         "signed-rank p-value (the audit's section 5 item 1: the continuous paired "
+                         "metric is the primary quantity, not the binary hold)")
+    ap.add_argument("--tilt_obs", action="store_true",
+                    help="audit section-5.2: bound the INS drift with the acceleration-derived "
+                         "thrust axis (gpd_me.tilt.TiltObserver) before the PID/observation")
+    ap.add_argument("--tilt_tau", type=float, default=0.5,
+                    help="tilt observer blend time constant [s] (only with --tilt_obs)")
     ap.add_argument("--verbose", action="store_true", help="also print the per-draw final z of "
                                                            "every src (audit the escape rate)")
     a = ap.parse_args()
     global RL_NAME, RL_DIR
     RL_NAME, RL_DIR = a.rl_ckpt, a.rl_dir
-    global PN_BIAS, PN_SIGMA, NET_LP, NET_LP_STATE
+    global PN_BIAS, PN_SIGMA, NET_LP
     PN_BIAS, PN_SIGMA = float(a.pn_bias), float(a.pn_sigma)
-    NET_LP, NET_LP_STATE = float(a.net_lp), None
+    NET_LP = float(a.net_lp)
     if PN_BIAS or PN_SIGMA:
         SRCS.append("truth_noisy")
     print("=== E4 closed loop: w_hat drives BOTH the attitude INS and the controller rate input ===")
@@ -371,7 +410,7 @@ def main():
     print("pass/fail: the adjacent-pair case with this policy sits at the stability boundary, so")
     print("the escape rate is the measurement.  'held' = final z > 0.3 m and std(z) < 3 m.\n")
     print(f"{'dps':>6} {'src':<8} {'held':>7} {'z_med':>7} {'z_IQR':>6} {'tilt':>6} {'rate_err':>9} "
-          f"{'k_hat':>7}  note")
+          f"{'k_perp':>7} {'k_norm':>7}  note")
     for dps in [float(x) for x in a.ranges.split(",")]:
         rows = {s: [] for s in SRCS}
         for seed in range(a.seeds):
@@ -383,14 +422,19 @@ def main():
             for src in SRCS:
                 row = run(flag=a.flag, dps=dps, src=src, ckpt=a.ckpt, seed=seed,
                           steps=a.steps, prior=prior, diag=diag, fault_rng=fault_rng, ic=ic,
-                          pre=pre, preseed=not a.no_preseed)
+                          pre=pre, preseed=not a.no_preseed,
+                          tilt_obs=a.tilt_obs, tilt_tau=a.tilt_tau)
                 rows[src].append(row)
                 if a.dump_rows:      # printing only: the failures are the rows worth explaining
+                    ts = ("" if row["tilt_used"] is None else
+                          f" | tilt_obs n_used={row['tilt_used']} n_rejected={row['tilt_rejected']}")
                     print(f"[rows] seed={seed} src={src:6s} held={int(row['z'] > 0.3 and row['zstd'] < 3.0)} "
                           f"z={row['z']:6.2f} zstd={row['zstd']:6.2f} zmin={row['zmin']:6.2f} "
                           f"tilt={row['tilt']:6.1f} rate_err={row['rate_err']:6.2f} "
                           f"| first1.5s: rate_err={row['rate_err_early']:5.2f} tilt={row['tilt_early']:5.1f} "
-                          f"| lost@step={row['hold_steps']:4d} k={row['k']*100:5.2f}cm", flush=True)
+                          f"| lost@step={row['hold_steps']:4d} "
+                          f"k_perp={row['k_perp']*100:5.2f}cm k_norm={row['k_hat_norm']*100:5.2f}cm"
+                          + ts, flush=True)
         for src in SRCS:
             m = summarize(rows[src])
             note = ""
@@ -398,11 +442,49 @@ def main():
                 note = "ckpt on OLD 26-feature layout -> falls back to w_alg (retrain)"
             print(f"{dps:>6.0f} {src:<8} {m['n_hold']:>3d}/{m['n']:<3d} {m['z_med']:>7.2f} "
                   f"{m['z_iqr']:>6.2f} {m['tilt']:>6.1f} {m['rate_err']:>9.2f} "
-                  f"{m['k']*100:>6.2f}cm  {note}")
+                  f"{m['k_perp']*100:>6.2f}cm {m['k_hat_norm']*100:>6.2f}cm  {note}")
         if a.verbose:
             for i in range(a.seeds):
                 print(f"        draw {i:3d}  " + "  ".join(
                     f"{s}={rows[s][i]['z']:7.2f}" for s in SRCS))
+        if a.wilcoxon > 0:
+            # Audit section 5 item 1: the primary quantity is the PAIRED continuous hold_steps
+            # (the step at which z first drops below 0.3 m), not the binary hold.  Draws already
+            # flown above are reused; only the excess is identified and flown now.
+            n_w = int(a.wilcoxon)
+            hs = {s: [] for s in SRCS}
+            for seed in range(n_w):
+                if seed < len(rows["truth"]):
+                    for src in SRCS:
+                        hs[src].append(rows[src][seed]["hold_steps"])
+                    continue
+                prior_w, diag_w, rng_w, ic_w, pre_w = identification(seed=seed, dps=dps, flag=a.flag)
+                if a.k_override is not None:
+                    prior_w = np.asarray(prior_w, float).copy()
+                    prior_w[8] = float(a.k_override)
+                for src in SRCS:
+                    row = run(flag=a.flag, dps=dps, src=src, ckpt=a.ckpt, seed=seed,
+                              steps=a.steps, prior=prior_w, diag=diag_w, fault_rng=rng_w,
+                              ic=ic_w, pre=pre_w, preseed=not a.no_preseed,
+                              tilt_obs=a.tilt_obs, tilt_tau=a.tilt_tau)
+                    hs[src].append(row["hold_steps"])
+            base = np.asarray(hs["truth"], float)
+            print(f"\n  paired continuous metric (Wilcoxon signed-rank, {n_w} draws, "
+                  f"paired on the same fault draws):")
+            print(f"    {'pair':<26} {'median d(hold_steps)':>22} {'p-value':>10}")
+            for src in SRCS:
+                if src == "truth":
+                    continue
+                d = np.asarray(hs[src], float) - base
+                med = float(np.median(d))
+                if np.all(d == 0):
+                    p = float("nan")          # wilcoxon() raises on an all-zero difference vector
+                else:
+                    try:
+                        p = float(wilcoxon(d).pvalue)
+                    except ValueError:
+                        p = float("nan")
+                print(f"    {f'hold_steps({src}) - hold_steps(truth)':<26} {med:>22.1f} {p:>10.4g}")
 
 
 if __name__ == "__main__":
