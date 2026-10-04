@@ -72,16 +72,15 @@ class MeasCeilObserver(TiltObserver):
             return R_ins
         if z_true is None:
             return super().correct(R_ins, vel, dt, omega)
-        # The real velocity still defines the derivative stream `v_prev`; only the sample handed to
-        # the parent is synthesised so that it derives exactly `n * z_true`.  This keeps the
-        # magnitude weighting / gating identical to the real arm and only perfects the direction.
+        # The real velocity still defines the derivative stream: `v_syn` is built on top of the real
+        # *previous* sample so the parent derives exactly `n * z_true`, then `v_prev` is restored to
+        # the real current sample so the next step's derivative is again the real one.
         a_i = (v - self.v_prev) / dt
         n = float(np.linalg.norm(a_i + Z_UP * self.g))
         t_syn = n * np.asarray(z_true, float).ravel()
         v_syn = self.v_prev + dt * (t_syn - Z_UP * self.g)
-        self.v_prev = v.copy()
         out = super().correct(R_ins, v_syn, dt, None)
-        self.v_prev = v.copy()          # undo the parent's internal advance to the synthesised sample
+        self.v_prev = v.copy()
         return out
 
 
@@ -145,6 +144,10 @@ def fly(seed, steps, ckpt, dps, kind, tau, prior_pool, vel_noise, vel_tau,
         u_cmd = np.clip((last + 1.0) * 7.5, 0.0, 15.0)
         rate = net.step(accel, gyro, u_cmd, env.shut_down)
         ins.update(rate, DT)
+        # The true attitude at the estimation instant: `z_meas` is aligned to THIS instant (the
+        # observer's whole point), so the measurement-error diagnostic compares against it, not
+        # against the post-step attitude used for the control-error columns.
+        R_true_pre = quat_to_matrix(env.quat[0])
         if tob is not None:
             if kind == "veldeg":
                 # the sim hands over a perfect world velocity; a real outer loop supplies a filtered
@@ -155,8 +158,7 @@ def fly(seed, steps, ckpt, dps, kind, tau, prior_pool, vel_noise, vel_tau,
             else:
                 vel_obs = env.vel[0]
             if kind == "meas-ceil":
-                R_true_now = quat_to_matrix(env.quat[0])
-                ins.R = tob.correct(ins.R, vel_obs, DT, z_true=R_true_now[:, 2])
+                ins.R = tob.correct(ins.R, vel_obs, DT, z_true=R_true_pre[:, 2])
             elif kind == "tilt-noalign":
                 ins.R = tob.correct(ins.R, vel_obs, DT)             # deliberately no omega
             else:
@@ -181,8 +183,9 @@ def fly(seed, steps, ckpt, dps, kind, tau, prior_pool, vel_noise, vel_tau,
         # AttitudeINS.yaw_error, which returns the *total* rotation angle (review sec. 2).
         yaw_err.append(float(np.rad2deg(Rotation.from_matrix(R_true.T @ R).as_rotvec()[2])))
         if tob is not None and tob.z_meas is not None:
-            # the measurement's own error: if this is not near zero the observer's premise is wrong
-            cm = float(np.clip(tob.z_meas @ R_true[:, 2], -1.0, 1.0))
+            # the measurement's own error at the estimation instant: if this is not near zero the
+            # observer's premise is wrong (or the plant has a force the derivation does not model).
+            cm = float(np.clip(tob.z_meas @ R_true_pre[:, 2], -1.0, 1.0))
             meas_err.append(float(np.rad2deg(np.arccos(cm))))
         if hold == steps and env.pos[0][2] < 0.3:
             hold = t
@@ -281,15 +284,21 @@ def main():
         print(f"{arm:>17} {dl.mean():10.1f} {float(np.median(dl)):9.1f} {pval:11.4f} "
               f"{n_lt:5d} {n_eq:5d} {n_gt:5d} {t300:12.2f} {zm:13.2f}")
 
-    # implausibility flags: a diagnostic ceiling that under-performs the ablation above it means the
-    # comparison is confounded, not that the observer helped.
+    # Implausibility flags.  A gap between the two ceiling arms is not automatically a bug: `oracle-att`
+    # carries the FULL true attitude (heading included), while `meas-ceil` only perfects the thrust-axis
+    # measurement, so the INS's heading still drifts and the blend still lags.  The informative check is
+    # whether perfecting the measurement beats the same blend on the real measurement.
     mh = {arm: np.mean([results[s][arm]["hold"] for s in range(a.seeds)]) for arm in arms}
     if mh["meas-ceil"] < mh["oracle-att"]:
-        print(f"\n# IMPLAUSIBLE: meas-ceil mean hold {mh['meas-ceil']:.1f} < oracle-att "
-              f"{mh['oracle-att']:.1f} -- the perfect-measurement ceiling should not be worse than "
-              f"the attitude ceiling.")
+        print(f"\n# FLAG: meas-ceil mean hold {mh['meas-ceil']:.1f} < oracle-att {mh['oracle-att']:.1f}. "
+              f"Expected in part: oracle-att supplies the full true attitude (heading included) while "
+              f"meas-ceil only perfects the thrust-axis measurement, so heading drift remains.")
+    t0 = f"tilt@{taus[0]}"
+    if mh["meas-ceil"] < mh[t0]:
+        print(f"# IMPLAUSIBLE: meas-ceil mean hold {mh['meas-ceil']:.1f} < {t0} {mh[t0]:.1f} -- a perfect "
+              f"thrust-axis measurement should not survive worse than the same blend on the real one.")
     if mh["veldeg"] > mh["oracle-att"]:
-        print(f"\n# NOTE: veldeg mean hold {mh['veldeg']:.1f} exceeds oracle-att "
+        print(f"# NOTE: veldeg mean hold {mh['veldeg']:.1f} exceeds oracle-att "
               f"{mh['oracle-att']:.1f} -- the degraded-velocity arm is not limited by velocity noise.")
 
 
