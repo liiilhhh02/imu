@@ -192,7 +192,12 @@ def episode(envs, nets, ins, pids, policy, buffer, a, anchor_flags, pre_pool):
             # inherited reward (MetaShutDown7._computeReward) has no altitude term at all, so a
             # policy is free to climb its way out of trouble.  Shaping in simulation is legitimate:
             # the policy never observes this term; only the plant and the reward may use ground truth.
-            rew = float(np.mean(rew)) + a.alt_w * (-abs(zz - 1.0))
+            rew = float(np.mean(rew)) + a.alt_w * (-min(abs(zz - 1.0), 1.0))
+            # CLIPPED at 1 m: an unclipped -|z-1| reaches -10 on a diverged run and
+            # then out-weighs the environment's own reward (|rew| ~ 0.2/step) by 25x,
+            # which drowns the attitude term that this whole exercise is about.  The
+            # audit asked for exactly this clip; the first v3 run without it showed
+            # rew=-84 per step.
             pending[i] = (obs_batch[i].copy(), np.asarray(act[i], dtype=float).ravel(),
                           rew, float(done))
             last_action[i] = np.asarray(act[i], dtype=float).ravel()

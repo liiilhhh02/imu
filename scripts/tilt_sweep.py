@@ -92,6 +92,27 @@ def parse_arm(arm):
     return arm, None
 
 
+HYBRID_KINDS = ("oracle-yaw", "oracle-rollpitch")
+
+
+def hybrid_attitude(kind, R_est, R_true):
+    """Channel-separated oracle (ZYX): one channel of the estimated attitude replaced by truth.
+
+    `oracle-yaw`       -> Rz(psi_true) Ry(theta_est) Rx(phi_est): true heading, estimated tilt
+    `oracle-rollpitch` -> Rz(psi_est) Ry(theta_true) Rx(phi_true): true tilt, estimated heading
+
+    The two arms together separate the tilt channel from the heading channel in both directions; if
+    the heading is an independent binding term, `oracle-yaw` (which keeps the drifting estimated
+    tilt) should survive far better than `oracle-rollpitch` (which keeps the drifting estimated
+    heading and is therefore no better than `ins` on the heading axis).
+    """
+    e_t = Rotation.from_matrix(R_true).as_euler("ZYX")   # [psi, theta, phi]
+    e_e = Rotation.from_matrix(R_est).as_euler("ZYX")
+    if kind == "oracle-yaw":
+        return Rotation.from_euler("ZYX", [e_t[0], e_e[1], e_e[2]]).as_matrix()
+    return Rotation.from_euler("ZYX", [e_e[0], e_t[1], e_t[2]]).as_matrix()
+
+
 def fly(seed, steps, ckpt, dps, kind, tau, prior_pool, vel_noise, vel_tau,
         rl_name=None, hold_ins=None):
     """One closed-loop flight for one arm.
@@ -163,7 +184,12 @@ def fly(seed, steps, ckpt, dps, kind, tau, prior_pool, vel_noise, vel_tau,
                 ins.R = tob.correct(ins.R, vel_obs, DT)             # deliberately no omega
             else:
                 ins.R = tob.correct(ins.R, vel_obs, DT, omega=rate)  # half-step measurement alignment
-        R = quat_to_matrix(env.quat[0]) if oracle_att else ins.R
+        if oracle_att:
+            R = quat_to_matrix(env.quat[0])
+        elif kind in HYBRID_KINDS:
+            R = hybrid_attitude(kind, ins.R, R_true_pre)
+        else:
+            R = ins.R
         ta, z_body = pid.step(DT, env.pos[0], Rotation.from_matrix(R).as_quat(), env.vel[0], tp)
         r_xy = float(np.hypot(z_body[0], z_body[1]))
         if r_xy > 0.26:
@@ -199,7 +225,8 @@ def fly(seed, steps, ckpt, dps, kind, tau, prior_pool, vel_noise, vel_tau,
         used=int(tob.n_used) if tob is not None else 0,
         rej=int(tob.n_rejected) if tob is not None else 0,
         rej_vclip=int(tob.n_rejected_vclip) if tob is not None else 0,
-        rej_thrust=int(tob.n_rejected_thrust) if tob is not None else 0)
+        rej_thrust=int(tob.n_rejected_thrust) if tob is not None else 0,
+        hybrid=bool(kind in HYBRID_KINDS))
 
 
 def rad_stats(a, mask=None):
@@ -210,7 +237,7 @@ def rad_stats(a, mask=None):
 
 def arm_list(taus):
     return (["ins"] + [f"tilt@{t}" for t in taus] + [f"tilt-noalign@{taus[0]}"]
-            + ["oracle-att", "meas-ceil", "veldeg"])
+            + ["oracle-att", "oracle-yaw", "oracle-rollpitch", "meas-ceil", "veldeg"])
 
 
 def main():
@@ -233,8 +260,8 @@ def main():
 
     print(f"# tilt_sweep  seeds={a.seeds} steps={a.steps} dps={a.dps} taus={taus} "
           f"vel_noise={a.vel_noise} vel_tau={a.vel_tau} ckpt={os.path.basename(a.ckpt)}")
-    hdr = (f"{'seed':>4} {'arm':>17} {'tilt_win':>9} {'yaw_win':>8} {'tilt300':>8} {'zmeas300':>9} "
-           f"{'hold':>6} {'dhold':>6} {'used':>6} {'rej':>5} {'vclip':>6} {'thr':>5} "
+    hdr = (f"{'seed':>4} {'arm':>17} {'tilt_win':>9} {'yaw_win':>8} {'tilt_hyb':>9} {'tilt300':>8} "
+           f"{'zmeas300':>9} {'hold':>6} {'dhold':>6} {'used':>6} {'rej':>5} {'vclip':>6} {'thr':>5} "
            f"{'inno_mu':>8} {'inno_p90':>9}")
     print(hdr)
     print("-" * len(hdr))
@@ -254,11 +281,15 @@ def main():
             r["tilt_win"] = float(r["tilt"][:w].mean()) if w > 0 else float("nan")
             r["yaw_win"] = float(r["yaw"][:w].mean()) if w > 0 else float("nan")
             r["tilt300"] = float(r["tilt"][:300].mean())
+            # the tilt of the hybrid attitude actually fed to the controller (construction check;
+            # nan for arms whose control attitude is not a hybrid oracle)
+            r["tilt_hyb"] = r["tilt_win"] if r["hybrid"] else float("nan")
             r["zmeas300"] = float(r["meas"][:300].mean())
             r["inno_mu"], r["inno_p90"] = rad_stats(np.asarray(r["innov"], float))
             seed_res[arm] = r
             r["dhold"] = r["hold"] - seed_res["ins"]["hold"]
-            print(f"{s:4d} {arm:>17} {r['tilt_win']:9.2f} {r['yaw_win']:8.2f} {r['tilt300']:8.2f} "
+            print(f"{s:4d} {arm:>17} {r['tilt_win']:9.2f} {r['yaw_win']:8.2f} {r['tilt_hyb']:9.2f} "
+                  f"{r['tilt300']:8.2f} "
                   f"{r['zmeas300']:9.2f} {r['hold']:6d} {r['dhold']:6d} {r['used']:6d} "
                   f"{r['rej']:5d} {r['rej_vclip']:6d} {r['rej_thrust']:5d} "
                   f"{r['inno_mu']:8.2f} {r['inno_p90']:9.2f}", flush=True)
