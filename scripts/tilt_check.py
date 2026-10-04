@@ -124,7 +124,8 @@ def main():
     ap.add_argument("--dps", type=float, default=1000.0)
     ap.add_argument("--tau", type=float, default=0.5)
     ap.add_argument("--taus", default="",
-                    help="comma-separated extra taus for the ins+tilt arm (the failure is decided\n                         "in the first second, so the blend may have to be much faster than 0.5 s)")
+                    help="comma-separated extra taus for the ins+tilt arm.  The failure is decided in "
+                         "the first second, so the blend may have to be much faster than 0.5 s.")
     ap.add_argument("--rl_name", default=None)
     a = ap.parse_args()
     print(f"{'seed':>4} {'arm':>10} {'tilt<1.5s':>10} {'tilt_mean':>10} {'tilt_p90':>9} "
