@@ -241,6 +241,12 @@ def main():
                     help="episodes per (prior, fault-draw) pair before re-identifying")
     ap.add_argument("--pool", type=int, default=8,
                     help="identification runs to cycle through (the deployment procedure is slow)")
+    ap.add_argument("--dr", type=float, default=0.0,
+                    help="domain randomisation on the TRAINING plant: per episode jitter M, KM and "
+                         "the actuator delay by +/- this fraction.  The acceptance venue is Gazebo and a "
+                         "pybullet-trained policy must transfer to a plant whose delay/coefficients differ; "
+                         "the priors are still identified on the nominal plant, which is realistic (the "
+                         "identification is itself imperfect).  Evaluation stays nominal.")
     ap.add_argument("--verify_pairs", type=int, default=1,
                     help="assert the replay-buffer action/next-obs alignment on the first tuples")
     ap.add_argument("--eval_every", type=int, default=50)
@@ -288,6 +294,7 @@ def main():
     policy.target_entropy = -2.0
 
     envs = [make_env(a.dps, a.seed + i) for i in range(a.num_env)]
+    dr_state = [None] * a.num_env
     nets = [NetRate(a.ckpt, dev, pool[i % a.pool][0], a.dps) for i in range(a.num_env)]
     ins = [AttitudeINS(np.eye(3)) for _ in range(a.num_env)]
     from gpd_me.policy import PositionPID  # noqa: E402  (local import: keeps the header short)
@@ -356,6 +363,13 @@ def main():
             slot = (ep // a.setup_episodes + i) % a.pool
             prior, diag, pre = draw_fault(e, 10000 + 100 * slot, a.dps, pool[slot])
             pre_pool[i] = pre
+            if a.dr > 0.0:
+                # jitter the TRAINING plant only (evaluation and the acceptance metric stay nominal)
+                jitter = lambda v: float(v * (1.0 + a.dr * rng.uniform(-1.0, 1.0)))
+                e.M = jitter(1.0)
+                e.KM = jitter(0.01)
+                e.delay = jitter(0.026)
+                dr_state[i] = (e.M, e.KM, e.delay)
             nets[i].prior = np.asarray(prior, float)
             nets[i].g_T = float(prior[3]); nets[i].tau = float(prior[7]); nets[i].k = float(prior[8])
             e._computeObs()
@@ -367,10 +381,11 @@ def main():
             policy.train(buffer, iterations=n_upd)
         ep += 1
         el = time.time() - t0
+        dr_txt = (" dr[0]=" + ",".join(f"{v:.3f}" for v in dr_state[0])) if (a.dr > 0 and dr_state[0]) else ""
         log(f"ep {ep:5d} z={st['z']:5.2f} rew={st['rew']:7.4f} tilt={np.rad2deg(st['tilt']):5.1f} "
             f"hold={int(np.mean(st['hold']))}(min {int(np.min(st['hold']))}) "
             f"k={np.array2string(st['k'], precision=4)} upd={n_upd} "
-            f"anchors={st['anchors']}/{a.num_env} buf={buffer.buffer_size} ep/s={ep/el:5.2f} "
+            f"anchors={st['anchors']}/{a.num_env} buf={buffer.buffer_size} ep/s={ep/el:5.2f}{dr_txt} "
             f"eta={str(timedelta(seconds=int(max(0, deadline - time.time()))))}", logp)
         if ep % a.eval_every == 0:
             res = {m: evaluate(a.eval_draws, a.eval_steps, m) for m in ("truth", "net")}
