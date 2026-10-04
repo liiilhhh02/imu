@@ -3,9 +3,10 @@ Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or conta
 Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
 See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
 [gz] spawn success=True
-[gz] state rate 1000 Hz -> substeps=5 (control at 200 Hz)
-[gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
-[gz] prior=[-1.015000e-02 -2.730000e-03 -1.220000e-03  1.074140e+00  3.978010e+00
-  2.771890e+00  1.745329e+01  2.615000e-02  1.053000e-02]
-[gz] fault IC spin=[ -0.596  -1.798 -24.695] rad/s  set=True
+[gz] state rate 997 Hz -> substeps=5 (control at 199 Hz)
+[gz] fault IC spin=[  1.022   0.36  -24.76 ] rad/s  set=True
+[gz] prior=[-7.340000e-03 -1.500000e-03 -2.300000e-04  1.158480e+00  4.377500e+00
+  3.051810e+00  1.745329e+01  2.612000e-02  7.420000e-03]
+[gz] fault IC spin=[  1.022   0.36  -24.76 ] rad/s  set=True
 [gz] src=net ckpt=e2e_v12.pt compatible=True
+RESULT gz flag=3 dps=1000 src=net: z_last=-2276.66 (std 473.54) xy_last=399.967 |w|=  39.8 rad/s wz= -33.15 sat= 100% rate_err=  8.90 att_last=145.9deg tilt_med= 71.5deg att_med=116.8deg loop= 67.9Hz

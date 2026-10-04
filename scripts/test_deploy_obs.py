@@ -21,11 +21,12 @@ for trial in range(200):
     tom = float(rng.uniform(6, 15))
     last_action = rng.uniform(-1, 1, 4)
     mask = rng.integers(0, 2, 4).astype(float)
-    # the harness's inline form (scripts/e4_closed_loop.py, the `obs = np.array([...])` line)
+    # the senior's own form (MetaShutDown7._computeObs:174): last_action[0] broadcast through the mask
     ref = np.array([rel[0], rel[1],
                     rate[0] / 10, rate[1] / 10, rate[2] / 50,
                     (ta - 9.8) / 3, (tom - 9.8) / 3,
-                    *(last_action * mask), *(mask * 2 - 1)], dtype=np.float32)
+                    *(float(np.asarray(last_action).ravel()[0]) * mask),
+                    *(mask * 2 - 1)], dtype=np.float32)
     got = deploy_obs(rel, rate, ta, tom, last_action, mask)
     assert got.dtype == ref.dtype == np.float32, (got.dtype, ref.dtype)
     assert got.shape == ref.shape == (15,), (got.shape, ref.shape)

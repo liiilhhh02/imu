@@ -305,10 +305,18 @@ def deploy_obs(rel, rate, ta, tom, last_action, mask):
     ``R_hat.T @ z_body``; ``rate`` is whatever the estimator produced; ``tom`` is the measured
     thrust-over-mass (the accelerometer's x sample), never a commanded or simulated quantity.
     """
+    # Dims 7:11 MUST reproduce the senior's own assembly, bug-for-bug: MetaShutDown7._computeObs
+    # (gym_pybullet_drones/envs/MetaShutDown7.py:174) writes `self.last_action[0] * self.shut_down`,
+    # i.e. the FIRST element of the action vector broadcast through the mask -- not the action vector
+    # masked element-wise.  The published checkpoints were trained on that distribution, so feeding
+    # the element-wise form (which this function and e4_closed_loop.py did until an external audit's
+    # criticism of a weak test exposed it: scripts/test_obs_convention.py) puts 2 of 15 inputs out of
+    # distribution.  Broadcast the scalar exactly as the environment does.
+    la = np.asarray(last_action, float).ravel()
     return np.array([rel[0], rel[1],
                      rate[0] / 10.0, rate[1] / 10.0, rate[2] / 50.0,
                      (ta - 9.8) / 3.0, (tom - 9.8) / 3.0,
-                     *(np.asarray(last_action, float).ravel() * mask),
+                     *(float(la[0]) * np.asarray(mask, float)),
                      *(np.asarray(mask, float) * 2.0 - 1.0)], dtype=np.float32)
 
 
