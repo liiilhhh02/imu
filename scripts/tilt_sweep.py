@@ -21,8 +21,14 @@ the arm loop -- the same post-fault state, IMU noise stream and commanded sequen
     tilt@{tau}              observer, measurement derived from the true-delay velocity, half-step aligned
     tilt-noalign@{tau}      same, but WITHOUT the omega half-step alignment -> measures its benefit
     oracle-att              DIAGNOSTIC: true attitude + the estimator's rate (a non-deployable ceiling)
+    oracle-yaw              DIAGNOSTIC: Rz(psi_true) Ry(theta_est) Rx(phi_est) -- true heading, est tilt
+    oracle-rollpitch        DIAGNOSTIC: Rz(psi_est) Ry(theta_true) Rx(phi_true) -- true tilt, est heading
     meas-ceil               DIAGNOSTIC: observer fed z_meas = R_true[:,2] ("the measurement made perfect")
     veldeg                  observer fed a white-noised, first-order-filtered velocity (deployability check)
+
+    The two channel-separated oracles answer whether the heading is an independent binding term:
+    `oracle-yaw` keeps the drifting estimated tilt but repairs the heading, `oracle-rollpitch` the
+    mirror, so a large hold gap between them is direct evidence about which channel decides survival.
 
     $PY scripts/tilt_sweep.py --seeds 3 --steps 800 --taus 0.02,0.1
 """
@@ -299,7 +305,8 @@ def main():
     print(f"\n# paired summary over {a.seeds} seeds ({os.path.basename(a.ckpt)}); "
           f"delta = hold(arm) - hold(ins), + is better")
     shdr = (f"{'arm':>17} {'mean_dhold':>10} {'med_dhold':>9} {'wilcoxon_p':>11} "
-            f"{'n_lt':>5} {'n_eq':>5} {'n_gt':>5} {'mean_tilt300':>12} {'mean_zmeas300':>13}")
+            f"{'n_lt':>5} {'n_eq':>5} {'n_gt':>5} {'mean_tilt300':>12} {'mean_tilt_hyb':>13} "
+            f"{'mean_yaw':>9} {'mean_zmeas300':>13}")
     print(shdr)
     print("-" * len(shdr))
     for arm in arms:
@@ -311,9 +318,11 @@ def main():
             pval = float("nan")
         n_lt = int((dl < 0).sum()); n_eq = int((dl == 0).sum()); n_gt = int((dl > 0).sum())
         t300 = float(np.mean([results[s][arm]["tilt300"] for s in range(a.seeds)]))
+        th = float(np.nanmean([results[s][arm]["tilt_hyb"] for s in range(a.seeds)]))
+        yw = float(np.mean([results[s][arm]["yaw_win"] for s in range(a.seeds)]))
         zm = float(np.mean([results[s][arm]["zmeas300"] for s in range(a.seeds)]))
         print(f"{arm:>17} {dl.mean():10.1f} {float(np.median(dl)):9.1f} {pval:11.4f} "
-              f"{n_lt:5d} {n_eq:5d} {n_gt:5d} {t300:12.2f} {zm:13.2f}")
+              f"{n_lt:5d} {n_eq:5d} {n_gt:5d} {t300:12.2f} {th:13.2f} {yw:9.2f} {zm:13.2f}")
 
     # Implausibility flags.  A gap between the two ceiling arms is not automatically a bug: `oracle-att`
     # carries the FULL true attitude (heading included), while `meas-ceil` only perfects the thrust-axis
@@ -331,6 +340,17 @@ def main():
     if mh["veldeg"] > mh["oracle-att"]:
         print(f"# NOTE: veldeg mean hold {mh['veldeg']:.1f} exceeds oracle-att "
               f"{mh['oracle-att']:.1f} -- the degraded-velocity arm is not limited by velocity noise.")
+
+    # Channel dominance: which single oracle channel moves the hold rate.  `oracle-yaw` keeps the
+    # drifting estimated tilt and repairs the heading; `oracle-rollpitch` does the mirror.  If the
+    # heading is the independent binding term, yaw-repair >> tilp-repair.  Read the mean_yaw column
+    # alongside: the repaired arm's yaw is small, the other's is not.
+    d = mh["oracle-yaw"] - mh["oracle-rollpitch"]
+    win = "oracle-yaw" if d > 0 else "oracle-rollpitch"
+    print(f"\n# CHANNEL: {win} dominates by {abs(d):.1f} steps "
+          f"(oracle-yaw {mh['oracle-yaw']:.1f} vs oracle-rollpitch {mh['oracle-rollpitch']:.1f}, "
+          f"ins {mh['ins']:.1f}, oracle-att {mh['oracle-att']:.1f}) -> "
+          f"{'repairing the HEADING' if d > 0 else 'repairing the TILT'} buys the survival on these draws.")
 
 
 if __name__ == "__main__":

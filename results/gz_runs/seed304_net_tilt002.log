@@ -5,8 +5,8 @@ See the migration guide at https://gymnasium.farama.org/introduction/migration_g
 [gz] spawn success=True
 [gz] state rate 999 Hz -> substeps=5 (control at 200 Hz)
 [gz] fault IC spin=[  0.372   2.393 -24.766] rad/s  set=True
-[gz] prior=[-5.130000e-03 -2.950000e-03 -1.240000e-03  1.117500e+00  3.848380e+00
-  2.680650e+00  1.745329e+01  2.608000e-02  5.950000e-03]
+[gz] prior=[-5.130000e-03 -2.950000e-03 -1.230000e-03  1.120190e+00  3.845910e+00
+  2.679060e+00  1.745329e+01  2.608000e-02  5.960000e-03]
 [gz] fault IC spin=[  0.372   2.393 -24.766] rad/s  set=True
 [gz] src=net ckpt=e2e_v12.pt compatible=True
-RESULT gz flag=3 dps=1000 src=net: z_last=-2144.27 (std 334.93) xy_last=1123.009 |w|=  47.5 rad/s wz= -23.49 sat= 100% rate_err= 11.31 att_last=103.1deg tilt_med= 79.7deg att_med= 96.3deg loop= 69.2Hz
+RESULT gz flag=3 dps=1000 src=net: z_last=-4365.15 (std 535.21) xy_last=2345.987 |w|=  48.6 rad/s wz= -29.02 sat= 100% rate_err= 13.92 att_last=130.2deg tilt_med= 79.9deg att_med= 93.1deg loop= 68.1Hz
