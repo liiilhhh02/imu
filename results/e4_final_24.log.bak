@@ -1,0 +1,29 @@
+pybullet build time: Jan 29 2025 23:16:28
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+Users of this version of Gym should be able to simply replace 'import gym' with 'import gymnasium as gym' in the vast majority of cases.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/home/liiil/Downloads/gym-pybullet-drones/gym_pybullet_drones/envs/BaseAviary.py:7: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  import pkg_resources
+=== E4 closed loop: w_hat drives BOTH the attitude INS and the controller rate input ===
+ckpt=results/e2e_v12.pt  mask=[0, 0, 1, 1]  24 fault draws x 2000 steps  (each src re-flown from the same draw)
+
+Read every row as a distribution over independent initial spins, never as single-seed
+pass/fail: the adjacent-pair case with this policy sits at the stability boundary, so
+the escape rate is the measurement.  'held' = final z > 0.3 m and std(z) < 3 m.
+
+   dps src         held   z_med  z_IQR   tilt  rate_err  k_perp  k_norm  note
+/home/liiil/Downloads/gym-pybullet-drones/.venv-repro/lib/python3.10/site-packages/gym/spaces/box.py:127: UserWarning: [33mWARN: Box bound precision lowered by casting to float32[0m
+  logger.warn(f"Box bound precision lowered by casting to {self.dtype}")
+/home/liiil/Downloads/gym-pybullet-drones/.venv-repro/lib/python3.10/site-packages/gym/spaces/box.py:127: UserWarning: [33mWARN: Box bound precision lowered by casting to float32[0m
+  logger.warn(f"Box bound precision lowered by casting to {self.dtype}")
+/home/liiil/Downloads/gym-pybullet-drones/.venv-repro/lib/python3.10/site-packages/torch/cuda/__init__.py:734: UserWarning: Can't initialize NVML
+  warnings.warn("Can't initialize NVML")
+  1000 truth     22/24     3.52   0.72   14.4      0.00   0.59cm   0.61cm  
+  1000 clipped    0/24      nan    nan    nan       nan   0.59cm   0.61cm  
+  1000 net        2/24     3.18   0.60   20.1      4.81   0.59cm   0.61cm  
+
+  paired continuous metric (Wilcoxon signed-rank, 24 draws, paired on the same fault draws):
+    pair                         median d(hold_steps)    p-value
+    hold_steps(clipped) - hold_steps(truth)                -1833.5  1.818e-05
+    hold_steps(net) - hold_steps(truth)                -1279.5   0.000378
