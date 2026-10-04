@@ -71,7 +71,8 @@ class TiltObserver:
         self.tilt_err_used = []      # |angle between the measurement and the INS's z|, radians
         self.z_meas = None           # last accepted measurement (world-frame thrust axis)
 
-    def correct(self, R_ins: np.ndarray, vel: np.ndarray, dt: float) -> np.ndarray:
+    def correct(self, R_ins: np.ndarray, vel: np.ndarray, dt: float,
+                omega: np.ndarray | None = None) -> np.ndarray:
         v = np.asarray(vel, float).ravel()
         if self.v_prev is None:
             self.v_prev = v.copy()
@@ -89,6 +90,18 @@ class TiltObserver:
             self.n_rejected_thrust += 1
             return R_ins
         z_meas = t / n
+        if omega is not None:
+            # The backward difference a_i covers the interval (t-dt, t] while the attitude is at t,
+            # so the raw measurement is timestamped ~half a step early -- at 43 rad/s that is ~6 deg,
+            # a large share of the 19-32 deg measured error.  Rotate it forward by the half step using
+            # the available rate estimate.  Over 2.5 ms even a 6.7 rad/s-wrong rate contributes <1 deg,
+            # so this does not couple the observer to the drift it is correcting.
+            w = np.asarray(omega, float).ravel()
+            wn = float(np.linalg.norm(w))
+            if wn > 1e-9:
+                th = wn * (0.5 * dt)
+                K = _skew(w / wn)
+                z_meas = (np.eye(3) + np.sin(th) * K + (1.0 - np.cos(th)) * (K @ K)) @ z_meas
         self.z_meas = z_meas
         R_ins = np.asarray(R_ins, float)
         z_ins = R_ins[:, 2]

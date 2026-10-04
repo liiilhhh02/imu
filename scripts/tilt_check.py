@@ -81,7 +81,7 @@ def fly(seed, steps, ckpt, dps, arm, tau, prior_pool, rl_name=None):
         rate = net.step(accel, gyro, u_cmd, env.shut_down)
         ins.update(rate, DT)
         if tob is not None:
-            ins.R = tob.correct(ins.R, env.vel[0], DT)
+            ins.R = tob.correct(ins.R, env.vel[0], DT, omega=rate)
         R = quat_to_matrix(env.quat[0]) if oracle_att else ins.R
         ta, z_body = pid.step(DT, env.pos[0], Rotation.from_matrix(R).as_quat(), env.vel[0], tp)
         r_xy = float(np.hypot(z_body[0], z_body[1]))
